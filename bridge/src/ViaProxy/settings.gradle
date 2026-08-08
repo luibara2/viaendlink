@@ -1,0 +1,18 @@
+pluginManagement {
+    repositories {
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+plugins {
+    id "org.gradle.toolchains.foojay-resolver-convention" version "1.0.0"
+}
+
+rootProject.name = "ViaProxy"
+
+// LOCAL PATCH (endstone-proxy). Build against the ViaBedrock clone beside this one instead of the
+// published net.raphimc:ViaBedrock snapshot, so edits there land in the jar. Gradle substitutes the
+// module for the included build automatically — nothing in build.gradle changes.
+// See ../../README.md for the full list of local modifications.
+includeBuild("../ViaBedrock")

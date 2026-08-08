@@ -1,0 +1,142 @@
+/*
+ * This file is part of ViaBedrock - https://github.com/RaphiMC/ViaBedrock
+ * Copyright (C) 2023-2026 RK_01/RaphiMC and contributors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+package net.raphimc.viabedrock.api.model.entity;
+
+import com.viaversion.viaversion.api.connection.UserConnection;
+import com.viaversion.viaversion.api.minecraft.entities.EntityTypes26_2;
+import com.viaversion.viaversion.api.minecraft.entitydata.EntityData;
+import com.viaversion.viaversion.api.protocol.packet.PacketWrapper;
+import com.viaversion.viaversion.api.type.Types;
+import com.viaversion.viaversion.api.type.types.version.VersionedTypes;
+import com.viaversion.viaversion.libs.mcstructs.text.TextFormatting;
+import com.viaversion.viaversion.protocols.v1_21_11to26_1.packet.ClientboundPackets26_1;
+import net.raphimc.viabedrock.api.util.StringUtil;
+import net.raphimc.viabedrock.api.util.TextUtil;
+import net.raphimc.viabedrock.protocol.BedrockProtocol;
+import net.raphimc.viabedrock.protocol.data.enums.java.PlayerTeamMethod;
+import net.raphimc.viabedrock.protocol.data.enums.java.generated.TeamCollisionRule;
+import net.raphimc.viabedrock.protocol.data.enums.java.generated.TeamVisibility;
+import net.raphimc.viabedrock.protocol.data.generated.java.Attributes;
+import net.raphimc.viabedrock.protocol.data.generated.java.EntityDataFields;
+import net.raphimc.viabedrock.protocol.model.EntityAttribute;
+import net.raphimc.viabedrock.protocol.model.PlayerAbilities;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
+
+public class PlayerEntity extends LivingEntity {
+
+    protected PlayerAbilities abilities;
+
+    public PlayerEntity(final UserConnection user, final long runtimeId, final int javaId, final UUID javaUuid, final PlayerAbilities abilities) {
+        super(user, abilities.entityUniqueId(), runtimeId, "minecraft:player", javaId, javaUuid, EntityTypes26_2.PLAYER);
+
+        this.abilities = abilities;
+    }
+
+    public final void createTeam() {
+        final PacketWrapper setPlayerTeam = PacketWrapper.create(ClientboundPackets26_1.SET_PLAYER_TEAM, this.user);
+        setPlayerTeam.write(Types.STRING, "vb_" + this.javaId); // team name
+        setPlayerTeam.write(Types.BYTE, (byte) PlayerTeamMethod.ADD.ordinal()); // mode
+        setPlayerTeam.write(Types.TAG, TextUtil.stringToNbt("vb_" + this.javaId)); // display name
+        setPlayerTeam.write(Types.TAG, TextUtil.stringToNbt("")); // prefix
+        setPlayerTeam.write(Types.TAG, TextUtil.stringToNbt("")); // suffix
+        setPlayerTeam.write(Types.VAR_INT, TeamVisibility.ALWAYS.ordinal()); // name tag visibility
+        setPlayerTeam.write(Types.VAR_INT, TeamCollisionRule.NEVER.ordinal()); // collision rule
+        setPlayerTeam.write(Types.BOOL_OPTIONAL_VAR_INT, null); // color
+        setPlayerTeam.write(Types.BYTE, (byte) 3); // flags
+        setPlayerTeam.write(Types.STRING_ARRAY, new String[]{StringUtil.encodeUUID(this.javaUuid)}); // players
+        setPlayerTeam.send(BedrockProtocol.class);
+    }
+
+    public final void updateName(final String name) {
+        this.setName(name);
+
+        final PacketWrapper setPlayerTeam = PacketWrapper.create(ClientboundPackets26_1.SET_PLAYER_TEAM, this.user);
+        setPlayerTeam.write(Types.STRING, "vb_" + this.javaId); // team name
+        setPlayerTeam.write(Types.BYTE, (byte) PlayerTeamMethod.CHANGE.ordinal()); // mode
+        setPlayerTeam.write(Types.TAG, TextUtil.stringToNbt("vb_" + this.javaId)); // display name
+        setPlayerTeam.write(Types.TAG, TextUtil.stringToNbt(name)); // prefix
+        setPlayerTeam.write(Types.TAG, TextUtil.stringToNbt("")); // suffix
+        setPlayerTeam.write(Types.VAR_INT, TeamVisibility.ALWAYS.ordinal()); // name tag visibility
+        setPlayerTeam.write(Types.VAR_INT, TeamCollisionRule.NEVER.ordinal()); // collision rule
+        setPlayerTeam.write(Types.BOOL_OPTIONAL_VAR_INT, null); // color
+        setPlayerTeam.write(Types.BYTE, (byte) 3); // flags
+        setPlayerTeam.send(BedrockProtocol.class);
+    }
+
+    public final void sendInitialEntityData() {
+        final List<EntityData> entityData = new ArrayList<>();
+        entityData.add(new EntityData(this.getJavaEntityDataIndex(EntityDataFields.PLAYER_MODE_CUSTOMISATION), VersionedTypes.V26_2.entityDataTypes.byteType, (byte) 0xFF));
+
+        final PacketWrapper setEntityData = PacketWrapper.create(ClientboundPackets26_1.SET_ENTITY_DATA, this.user);
+        setEntityData.write(Types.VAR_INT, this.javaId); // entity id
+        setEntityData.write(VersionedTypes.V26_2.entityDataList, entityData); // entity data
+        setEntityData.send(BedrockProtocol.class);
+    }
+
+    @Override
+    public void remove() {
+        super.remove();
+
+        final PacketWrapper setPlayerTeam = PacketWrapper.create(ClientboundPackets26_1.SET_PLAYER_TEAM, this.user);
+        setPlayerTeam.write(Types.STRING, "vb_" + this.javaId); // team name
+        setPlayerTeam.write(Types.BYTE, (byte) PlayerTeamMethod.REMOVE.ordinal()); // mode
+        setPlayerTeam.send(BedrockProtocol.class);
+    }
+
+    @Override
+    public float eyeOffset() {
+        return 1.62F;
+    }
+
+    public PlayerAbilities abilities() {
+        return this.abilities;
+    }
+
+    public void setAbilities(final PlayerAbilities abilities) {
+        this.abilities = abilities;
+    }
+
+    @Override
+    protected boolean translateAttribute(final EntityAttribute attribute, final PacketWrapper javaAttributes, final AtomicInteger attributeCount, final List<EntityData> javaEntityData) {
+        return switch (attribute.name()) {
+            case "minecraft:absorption" -> {
+                javaEntityData.add(new EntityData(this.getJavaEntityDataIndex(EntityDataFields.PLAYER_ABSORPTION), VersionedTypes.V26_2.entityDataTypes.floatType, attribute.computeClampedValue()));
+                javaAttributes.write(Types.VAR_INT, BedrockProtocol.MAPPINGS.getJavaEntityAttributes().get(Attributes.MAX_ABSORPTION)); // attribute id
+                javaAttributes.write(Types.DOUBLE, (double) attribute.maxValue()); // base value
+                javaAttributes.write(Types.VAR_INT, 0); // modifier count
+                attributeCount.incrementAndGet();
+                yield true;
+            }
+            case "minecraft:luck" -> {
+                javaAttributes.write(Types.VAR_INT, BedrockProtocol.MAPPINGS.getJavaEntityAttributes().get(Attributes.LUCK)); // attribute id
+                javaAttributes.write(Types.DOUBLE, (double) attribute.computeClampedValue()); // base value
+                javaAttributes.write(Types.VAR_INT, 0); // modifier count
+                attributeCount.incrementAndGet();
+                yield true;
+            }
+            case "minecraft:player.hunger", "minecraft:player.saturation", "minecraft:player.experience", "minecraft:player.level", "minecraft:player.exhaustion" ->
+                    true; // Ignore for non client player entities
+            default -> super.translateAttribute(attribute, javaAttributes, attributeCount, javaEntityData);
+        };
+    }
+
+}

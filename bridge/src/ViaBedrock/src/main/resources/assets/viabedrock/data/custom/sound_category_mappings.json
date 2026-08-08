@@ -1,0 +1,13 @@
+{
+  "ambient": "AMBIENT",
+  "block": "BLOCKS",
+  "bottle": "NEUTRAL",
+  "hostile": "HOSTILE",
+  "music": "MUSIC",
+  "neutral": "NEUTRAL",
+  "player": "PLAYERS",
+  "record": "RECORDS",
+  "sparkler": "NEUTRAL",
+  "ui": "UI",
+  "weather": "WEATHER"
+}

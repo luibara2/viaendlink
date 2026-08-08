@@ -1,0 +1,32 @@
+base {
+    java.toolchain.languageVersion = JavaLanguageVersion.of(project.java_version)
+
+    group = project.maven_group
+    archivesName = project.name
+    version = project.maven_version
+}
+
+repositories {
+    mavenCentral()
+}
+
+jar {
+    def projectName = rootProject.name
+    [file("${projectDir}/LICENSE"), file("${rootDir}/LICENSE")].find { it.exists() }?.with { licenseFile ->
+        from(licenseFile) {
+            rename { "${it}_${projectName}" }
+        }
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = "UTF-8"
+}
+
+tasks.withType(Javadoc).configureEach {
+    options {
+        encoding = "UTF-8"
+        addBooleanOption("Xdoclint:none", true)
+        quiet()
+    }
+}

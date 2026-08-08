@@ -1,0 +1,126 @@
+/*
+ * This file is part of ViaBedrock - https://github.com/RaphiMC/ViaBedrock
+ * Copyright (C) 2023-2026 RK_01/RaphiMC and contributors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+package net.raphimc.viabedrock.protocol.provider;
+
+import com.viaversion.viaversion.api.connection.UserConnection;
+import com.viaversion.viaversion.api.platform.providers.Provider;
+import com.viaversion.viaversion.libs.gson.JsonObject;
+import net.raphimc.viabedrock.api.modinterface.BedrockSkinUtilityInterface;
+import net.raphimc.viabedrock.api.modinterface.ViaBedrockUtilityInterface;
+import net.raphimc.viabedrock.api.resourcepack.content.Content;
+import net.raphimc.viabedrock.protocol.BedrockProtocol;
+import net.raphimc.viabedrock.protocol.data.DataValues;
+import net.raphimc.viabedrock.protocol.data.ProtocolConstants;
+import net.raphimc.viabedrock.protocol.data.enums.bedrock.MemoryTier;
+import net.raphimc.viabedrock.protocol.data.enums.bedrock.generated.BuildPlatform;
+import net.raphimc.viabedrock.protocol.data.enums.bedrock.generated.GraphicsMode;
+import net.raphimc.viabedrock.protocol.data.enums.bedrock.generated.InputMode;
+import net.raphimc.viabedrock.protocol.data.enums.bedrock.generated.UIProfile;
+import net.raphimc.viabedrock.protocol.model.SkinData;
+import net.raphimc.viabedrock.protocol.storage.AuthData;
+import net.raphimc.viabedrock.protocol.storage.ChannelStorage;
+import net.raphimc.viabedrock.protocol.storage.HandshakeStorage;
+import net.raphimc.viabedrock.protocol.types.primitive.ImageType;
+
+import java.awt.image.BufferedImage;
+import java.nio.charset.StandardCharsets;
+import java.util.*;
+
+public class SkinProvider implements Provider {
+
+    public Map<String, Object> getClientPlayerSkin(final UserConnection user) {
+        final AuthData authData = user.get(AuthData.class);
+        final Map<String, Object> claims = new HashMap<>();
+
+        { // Skin claims
+            final Content skinPackContent = BedrockProtocol.MAPPINGS.getBedrockSkinPacks().get(DataValues.VANILLA_SKIN_PACK_KEY).content();
+            final BufferedImage skin = skinPackContent.getImage("steve.png").getImage();
+            final JsonObject skinGeometry = skinPackContent.getSortedJson("geometry.json");
+
+            claims.put("SkinId", UUID.randomUUID().toString());
+            claims.put("SkinData", Base64.getEncoder().encodeToString(ImageType.getImageData(skin)));
+            claims.put("SkinImageWidth", skin.getWidth());
+            claims.put("SkinImageHeight", skin.getHeight());
+            claims.put("SkinGeometryData", Base64.getEncoder().encodeToString(skinGeometry.toString().getBytes(StandardCharsets.UTF_8)));
+            claims.put("SkinGeometryDataEngineVersion", Base64.getEncoder().encodeToString("0.0.0".getBytes(StandardCharsets.UTF_8)));
+            claims.put("SkinResourcePatch", Base64.getEncoder().encodeToString("{\"geometry\":{\"default\":\"geometry.humanoid.custom\"}}".getBytes(StandardCharsets.UTF_8)));
+            claims.put("SkinAnimationData", "");
+            claims.put("SkinColor", "#0");
+            claims.put("PremiumSkin", false);
+            claims.put("PersonaSkin", false);
+            claims.put("TrustedSkin", false);
+            claims.put("OverrideSkin", false);
+            claims.put("ArmSize", "wide");
+            claims.put("AnimatedImageData", new ArrayList<>());
+            claims.put("PersonaPieces", new ArrayList<>());
+            claims.put("PieceTintColors", new ArrayList<>());
+        }
+        { // Cape claims
+            claims.put("CapeId", "");
+            claims.put("CapeData", "");
+            claims.put("CapeImageWidth", 0);
+            claims.put("CapeImageHeight", 0);
+            claims.put("CapeOnClassicSkin", false);
+        }
+        { // Session claims
+            final HandshakeStorage handshakeStorage = user.get(HandshakeStorage.class);
+            claims.put("ServerAddress", handshakeStorage.hostname() + ":" + handshakeStorage.port());
+            claims.put("ThirdPartyName", user.getProtocolInfo().getUsername());
+        }
+        { // Client claims
+            claims.put("GameVersion", ProtocolConstants.BEDROCK_VERSION_NAME);
+            claims.put("LanguageCode", "en_US");
+            claims.put("GraphicsMode", GraphicsMode.Fancy.getValue());
+            claims.put("GuiScale", -1);
+            claims.put("UIProfile", UIProfile.Classic.getValue());
+            claims.put("ClientRandomId", authData.getClientRandomId());
+            claims.put("SelfSignedId", authData.getSelfSignedId());
+            claims.put("IsEditorMode", false);
+            claims.put("FilterProfanity", false);
+        }
+        { // Device claims
+            claims.put("DeviceId", authData.getDeviceId().toString().replace("-", ""));
+            claims.put("DeviceModel", "MS-7E51 Micro-Star International Co., Ltd. (Unknown)");
+            claims.put("DeviceOS", BuildPlatform.Win32.getValue());
+            claims.put("CurrentInputMode", InputMode.Mouse.getValue());
+            claims.put("DefaultInputMode", InputMode.Mouse.getValue());
+        }
+        { // Hardware claims
+            claims.put("MemoryTier", MemoryTier.SuperHigh.ordinal());
+            claims.put("MaxViewDistance", 96);
+            claims.put("CompatibleWithClientSideChunkGen", false);
+        }
+        { // Platform claims
+            claims.put("PlatformType", 0);
+            claims.put("PlatformOfflineId", "");
+            claims.put("PlatformOnlineId", "");
+        }
+
+        return claims;
+    }
+
+    public void setSkin(final UserConnection user, final UUID playerUuid, final SkinData skin) {
+        final ChannelStorage channelStorage = user.get(ChannelStorage.class);
+        if (channelStorage.hasChannel(ViaBedrockUtilityInterface.CHANNEL)) {
+            ViaBedrockUtilityInterface.sendSkin(user, playerUuid, skin);
+        } else if (channelStorage.hasChannel(BedrockSkinUtilityInterface.CHANNEL)) {
+            BedrockSkinUtilityInterface.sendSkin(user, playerUuid, skin);
+        }
+    }
+
+}

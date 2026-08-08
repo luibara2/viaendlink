@@ -1,0 +1,25 @@
+{
+  "foliage_color": {
+    "mesa": 10387789,
+    "mangrove_swamp": 9285927,
+    "swamp": 6975545
+  },
+  "grass_color": {
+    "mesa": 9470285
+  },
+  "grass_color_modifier": {
+    "mangrove_swamp": "swamp",
+    "swamp": "swamp",
+    "roofed": "dark_forest"
+  },
+  "mood_sound": {
+    "overworld": "minecraft:ambient.cave",
+    "overworld_generation": "minecraft:ambient.cave",
+    "the_end": "minecraft:ambient.cave",
+    "basalt_deltas": "minecraft:ambient.basalt_deltas.mood",
+    "crimson_forest": "minecraft:ambient.crimson_forest.mood",
+    "nether_wastes": "minecraft:ambient.nether_wastes.mood",
+    "soulsand_valley": "minecraft:ambient.soul_sand_valley.mood",
+    "warped_forest": "minecraft:ambient.warped_forest.mood"
+  }
+}
