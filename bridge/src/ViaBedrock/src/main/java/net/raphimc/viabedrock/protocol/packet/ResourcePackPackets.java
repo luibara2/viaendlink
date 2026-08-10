@@ -153,7 +153,10 @@ public class ResourcePackPackets {
                 wrapper.user().put(new ResourcePackStorage(resourcePacks));
             }
 
-            if (loadStateTracker == null || !loadStateTracker.hasJavaClientAccepted()) {
+            if (loadStateTracker == null || !loadStateTracker.hasJavaClientAccepted() || loadStateTracker.hasJavaClientLoaded()) {
+                // hasJavaClientLoaded(): the Java client already said SUCCESSFULLY_LOADED, before this
+                // stack packet existed. That reply was held back then (see the serverbound handler
+                // below) precisely so it could be sent here, in the order the server expects.
                 final PacketWrapper resourcePackClientResponse = wrapper.create(ServerboundBedrockPackets.RESOURCE_PACK_CLIENT_RESPONSE);
                 resourcePackClientResponse.write(Types.BYTE, (byte) ResourcePackResponse.ResourcePackStackFinished.getValue()); // status
                 resourcePackClientResponse.write(BedrockTypes.SHORT_LE_STRING_ARRAY, new String[0]); // downloading packs
@@ -212,11 +215,17 @@ public class ResourcePackPackets {
                     if (resourcePackStorage != null) {
                         resourcePackStorage.setLoadedOnJavaClient();
                     }
+                    if (deferStackFinishedUntilPackStack(wrapper)) {
+                        return;
+                    }
                     wrapper.write(Types.BYTE, (byte) ResourcePackResponse.ResourcePackStackFinished.getValue()); // status
                     wrapper.write(BedrockTypes.SHORT_LE_STRING_ARRAY, new String[0]); // downloading packs
                 }
                 case FAILED_DOWNLOAD, FAILED_RELOAD, DISCARDED -> {
                     ViaBedrock.getPlatform().getLogger().log(Level.WARNING, "Client resource pack download/load failed");
+                    if (deferStackFinishedUntilPackStack(wrapper)) {
+                        return;
+                    }
                     wrapper.write(Types.BYTE, (byte) ResourcePackResponse.ResourcePackStackFinished.getValue()); // status
                     wrapper.write(BedrockTypes.SHORT_LE_STRING_ARRAY, new String[0]); // downloading packs
                 }
@@ -247,6 +256,37 @@ public class ResourcePackPackets {
                 default -> throw new IllegalStateException("Unhandled ResourcePackAction: " + action);
             }
         });
+    }
+
+    /**
+     * Holds back a "resource pack stack finished" reply that the Java client has produced before the
+     * Bedrock server sent its RESOURCE_PACK_STACK, and returns whether it did so.
+     *
+     * <p>The Bedrock handshake is strictly ordered: the client answers RESOURCE_PACKS_INFO with
+     * DownloadingFinished, the server replies with the pack stack, and only then does the client send
+     * ResourcePackStackFinished. Accepting the push puts the DownloadingFinished on an
+     * {@link ResourcePackLoadStateTracker#loadRequestedResourcePacks() off-thread completion}, so any
+     * client that reports the pack loaded or failed immediately afterwards races ahead of it.
+     * ViaProxy's {@code fake-accept-resource-packs} does exactly that — it answers the push with
+     * ACCEPTED and SUCCESSFULLY_LOADED in the same breath — and the server then sees the handshake end
+     * before it began: it skips the pack stack entirely and kicks the trailing DownloadingFinished as
+     * an out-of-state packet (BDS: UNEXPECTED_PACKET, a few seconds into the join).</p>
+     *
+     * <p>Deferring is only safe once the client has accepted, because that is what guarantees a
+     * DownloadingFinished is still coming and therefore that a pack stack will arrive to release the
+     * held reply. Without an acceptance there is nothing to wait for, and the reply goes out at
+     * once.</p>
+     */
+    private static boolean deferStackFinishedUntilPackStack(final PacketWrapper wrapper) {
+        final ResourcePackLoadStateTracker loadStateTracker = wrapper.user().get(ResourcePackLoadStateTracker.class);
+        if (loadStateTracker == null || !loadStateTracker.hasJavaClientAccepted()) {
+            // No tracker means the stack has already been handled, so replying now is the right order.
+            return false;
+        }
+        ViaBedrock.getPlatform().getLogger().log(Level.FINE, "endstone: client finished with the resource pack before the server sent its pack stack, deferring the stack-finished reply");
+        loadStateTracker.setJavaClientLoaded();
+        wrapper.cancel();
+        return true;
     }
 
 }

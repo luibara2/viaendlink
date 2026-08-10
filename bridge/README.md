@@ -36,15 +36,36 @@ Keep this list current. Everything else is upstream and should stay that way, so
 | `src/ViaProxy/.../external_interface/ExternalInterface.java` | One call to `EndstoneBridgeAuth.fill(...)` in `fillPlayerData`, for Bedrock targets with no account configured. |
 | `src/ViaProxy/build.gradle` | Drops the webrtc-java natives and the Swing look-and-feel from the fat jar. See below. |
 | `src/ViaBedrock/.../api/util/BedrockLineBreaks.java` | **New file.** Normalises real `
-`, `
+`, `
 ` and the *escaped* two-character `
 ` that JSON rawtext pipelines leave behind, so text that looks multi-line on Bedrock splits correctly. `-Dendstone.bridge.traceText=true` logs the raw string with escapes visible. |
 | `src/ViaBedrock/.../rewriter/blockentity/SignBlockEntityRewriter.java` | Normalises sign text before splitting it into Java's four lines. |
 | `src/ViaBedrock/.../protocol/packet/HudPackets.java` | Collapses breaks in titles, subtitles and the action bar to a separator (`endstone.bridge.titleLineSeparator`, default a space) — Java draws all three as one un-wrapped line. |
 | `src/ViaBedrock/.../protocol/packet/JoinPackets.java` | Tab list header/footer are configurable and no longer advertise ViaBedrock. `endstone.bridge.tabListHeader` defaults to the level name, `endstone.bridge.tabListFooter` to empty. |
+| `src/ViaBedrock/.../protocol/packet/ResourcePackPackets.java`, `.../storage/ResourcePackLoadStateTracker.java` | A "stack finished" reply is held until the server's pack stack actually arrives, instead of being sent the moment the Java client says the pack loaded. See below. |
 
 Both patches are **inert unless `endstone.bridge.secret` is set**, which only the proxy does. This
 jar still behaves exactly like upstream ViaProxy when run standalone.
+
+### The resource pack handshake has an order, and fake-accept broke it
+
+Bedrock's pack negotiation is three strictly ordered steps: the client answers `ResourcePacksInfo`
+with `DownloadingFinished`, the server replies with the pack stack, and only then does the client
+send `ResourcePackStackFinished`. ViaBedrock drives the first from the Java client's ACCEPTED — but
+completes it on a worker thread, so the packet leaves a few milliseconds later — and the last
+directly from the client's SUCCESSFULLY_LOADED.
+
+A real Java client has to download the pack in between, which is far longer than that gap. ViaProxy's
+`fake-accept-resource-packs` does not: it answers the push with ACCEPTED **and** SUCCESSFULLY_LOADED
+in the same breath, so `ResourcePackStackFinished` overtakes the `DownloadingFinished` still in
+flight. The server sees the handshake end before it began — it never sends a pack stack at all — and
+kicks the `DownloadingFinished` that lands afterwards as an out-of-state packet.
+
+On BDS that kick is `UNEXPECTED_PACKET`, and it arrives **after** the whole join sequence has been
+sent, so the log shows a player who fully joined and was then dropped for no visible reason, ~3s in.
+The proxy is holding `acceptServerResourcePacks=true` on purpose (a Java client cannot load a Bedrock
+pack, and ViaBedrock's converted-pack server is on loopback where a remote player cannot reach it),
+so the spoofer stays and ViaBedrock holds the reply until the stack arrives instead.
 
 ### What the extra claims are for
 

@@ -53,7 +53,11 @@ $expectations = @(
     @{ Class   = "net/raphimc/viabedrock/protocol/packet/HudPackets.class"
        Present = "endstone.bridge.titleLineSeparator"
        Absent  = $null
-       What    = "title/subtitle/action bar breaks collapsed for single-line Java surfaces" }
+       What    = "title/subtitle/action bar breaks collapsed for single-line Java surfaces" },
+    @{ Class   = "net/raphimc/viabedrock/protocol/packet/ResourcePackPackets.class"
+       Present = "deferring the stack-finished reply"
+       Absent  = $null
+       What    = "pack handshake is not ended early by a fake-accepted pack" }
 )
 
 function Invoke-Gradle([string] $directory, [string[]] $gradleArgs) {

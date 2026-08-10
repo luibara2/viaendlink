@@ -50,6 +50,7 @@ public class ResourcePackLoadStateTracker extends StoredObject {
     }, null, true);
     private final CompletableFuture<Void> loadFuture = new CompletableFuture<>();
     private boolean javaClientAccepted;
+    private boolean javaClientLoaded;
 
     public ResourcePackLoadStateTracker(final UserConnection user, final ResourcePackLoadStateTracker.Info[] infos) {
         super(user);
@@ -171,6 +172,24 @@ public class ResourcePackLoadStateTracker extends StoredObject {
 
     public void setJavaClientAccepted() {
         this.javaClientAccepted = true;
+    }
+
+    /**
+     * Whether the Java client reported the pack loaded before the Bedrock server sent its pack stack.
+     *
+     * <p>A real client cannot do this — it has to download the pack first, which takes long enough for
+     * the stack to arrive — but ViaProxy's {@code fake-accept-resource-packs} spoofer answers the push
+     * with ACCEPTED and SUCCESSFULLY_LOADED in the same breath. Replying "stack finished" that early
+     * ends the negotiation before the "downloading finished" we still owe the server has been sent,
+     * and the server kicks that trailing packet as out of state. So the reply is held here and sent by
+     * the RESOURCE_PACK_STACK handler instead.</p>
+     */
+    public boolean hasJavaClientLoaded() {
+        return this.javaClientLoaded;
+    }
+
+    public void setJavaClientLoaded() {
+        this.javaClientLoaded = true;
     }
 
     public record Info(ResourcePack.Key key, byte[] contentKey, String contentId, URL httpUrl) {
