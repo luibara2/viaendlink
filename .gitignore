@@ -19,7 +19,12 @@ config.properties
 permissions.properties
 
 # Generated at runtime by the addon: the translator's own config, caches, saves and extracted jar.
-plugins/
+#
+# Anchored with a leading slash, and it must stay that way. Unanchored, `plugins/` matches a
+# directory of that name at ANY depth - which silently excluded ViaProxy's own
+# net/raphimc/viaproxy/plugins/ package, 23 source files, from the repository. The working tree
+# built fine because the files were on disk; a fresh clone did not compile at all.
+/plugins/
 viaproxy.yml
 saves.json
 blob_cache/
