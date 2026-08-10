@@ -1,0 +1,39 @@
+# Normalise line endings so a Windows and a Linux contributor do not produce whole-file diffs
+# against each other. Everything git detects as text is stored LF and checked out natively.
+* text=auto
+
+# Shell scripts must stay LF even on Windows checkouts: CRLF makes them unrunnable on Linux, and
+# CI builds the vendored translator with these wrappers.
+*.sh text eol=lf
+gradlew text eol=lf
+
+# Batch and PowerShell files are the mirror image.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Never touch these.
+*.jar binary
+*.zip binary
+*.gz binary
+*.png binary
+*.jpg binary
+*.bin binary
+*.nbt binary
+*.mcstructure binary
+
+# ------------------------------------------------------------------------------------------------
+#  Vendored third-party sources
+# ------------------------------------------------------------------------------------------------
+# ViaProxy and ViaBedrock under bridge/src/ are upstream snapshots carrying a handful of local
+# patches, listed in bridge/README.md. Marking them as vendored keeps them out of the language
+# statistics and collapses them by default in diffs, so a real change to this project is not buried
+# under a thousand files nobody here wrote. They are still searchable and still built.
+bridge/src/ViaProxy/**   linguist-vendored
+bridge/src/ViaBedrock/** linguist-vendored
+
+# ...with one exception. These are the local patches themselves — the only reason the sources are
+# vendored rather than fetched — so they should show up in a diff like any other change here.
+bridge/src/ViaProxy/src/main/java/net/raphimc/viaproxy/proxy/external_interface/EndstoneBridgeAuth.java   -linguist-vendored
+bridge/src/ViaProxy/src/main/java/net/raphimc/viaproxy/proxy/external_interface/ExternalInterface.java    -linguist-vendored
+bridge/src/ViaBedrock/src/main/java/net/raphimc/viabedrock/api/util/BedrockLineBreaks.java                -linguist-vendored

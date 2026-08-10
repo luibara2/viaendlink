@@ -1,0 +1,114 @@
+name: Bug report
+description: Something is broken or behaves unexpectedly
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please check the **Known limits** section of the
+        [README](https://github.com/luibara2/viaendlink/blob/main/README.md) first — containers,
+        movement, custom addon content and block entities are known not to work, and reports of
+        those tell me nothing I do not already know.
+
+        Most of what is left comes down to the Java client version and where the translation broke,
+        so the versions and the log matter more than anything else you can tell me.
+
+        **Found a security problem?** Do not file it here — see
+        [SECURITY.md](https://github.com/luibara2/viaendlink/blob/main/SECURITY.md).
+
+  - type: checkboxes
+    id: known-limits
+    attributes:
+      label: Before filing
+      options:
+        - label: I have read the README's **Known limits** and this is not one of them
+          required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+      placeholder: |
+        A Java 1.21.4 client connects and reaches the world, but every block breaks instantly and
+        then reappears.
+    validations:
+      required: true
+
+  - type: input
+    id: java-version
+    attributes:
+      label: Minecraft Java client version
+      description: The exact version the player connected with. Older versions go through a longer
+        translation chain and fail differently.
+      placeholder: "1.21.4"
+    validations:
+      required: true
+
+  - type: input
+    id: backend-version
+    attributes:
+      label: Backend version
+      description: The Minecraft version your Endstone/BDS backends run, and the Endstone version.
+      placeholder: "Minecraft 1.26.40, Endstone 0.11.7"
+    validations:
+      required: true
+
+  - type: input
+    id: versions
+    attributes:
+      label: ViaEndlink and Endlink versions
+      description: The releases you are running, or the commits if you built them yourself.
+      placeholder: "ViaEndlink v0.1.0 on Endlink v0.1.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: bedrock-comparison
+    attributes:
+      label: Does the same thing happen for a Bedrock player?
+      description: |
+        The single most useful thing you can tell me. If a Bedrock client hits it too, the bug is in
+        the proxy or the backend and does not belong in this repository.
+      options:
+        - "No — Bedrock players are fine, only Java players see this"
+        - "Yes — Bedrock players see it too"
+        - "I have not tried"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: online-mode
+    attributes:
+      label: Is onlineMode on?
+      description: Found in `plugins/ViaEndlink/config.properties`. It defaults to on.
+      options:
+        - "Yes (default)"
+        - "No"
+        - "Not sure"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Proxy log
+      description: |
+        The relevant part of `logs/latest.log` from around the failure, including the addon's startup
+        lines. **Please remove player IP addresses and XUIDs** if you would rather not publish them —
+        they appear on join and leave lines.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Configuration
+      description: |
+        `plugins/ViaEndlink/config.properties`, and the relevant part of the proxy's own
+        `config.properties` if it matters. **Remove `backendVerification.sharedSecret`** — it is the
+        credential your whole network trusts.
+      render: properties
+    validations:
+      required: false

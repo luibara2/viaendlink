@@ -1,0 +1,124 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# ViaEndlink cannot be built on its own. It compiles against the proxy's plugin API, and Endlink
+# picks addons up as included builds from sibling directories, so every job here checks out both
+# repositories side by side and drives the build from endlink/. Endlink is public, so no token is
+# needed to check it out.
+#
+# That also means CI builds against Endlink's *published* main, not whatever is in a local working
+# tree. A red build here after a change to the plugin API usually means the API change has not been
+# pushed yet, rather than that this addon is broken.
+
+jobs:
+  # The fast signal on every push: does the addon still compile against Endlink, and do its tests
+  # pass. Deliberately does not build the vendored translator, which takes an order of magnitude
+  # longer.
+  addon:
+    name: Compile and test the addon
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out ViaEndlink
+        uses: actions/checkout@v4
+        with:
+          path: viaendlink
+
+      - name: Check out Endlink
+        uses: actions/checkout@v4
+        with:
+          repository: luibara2/endlink
+          ref: main
+          path: endlink
+
+      # The addon's own toolchain targets Java 17, resolved by the foojay plugin. 21 is what runs
+      # Gradle itself.
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # The jar task warns that bridge/dist/ViaProxy.jar is absent and packages without it. That is
+      # expected here - this job is about the addon's own code. The complete jar comes from `bridge`.
+      - name: Build
+        working-directory: endlink
+        run: ./gradlew :viaendlink:build --no-daemon
+
+      # Worth having even when the build is green: a failing test is the thing people actually want
+      # to read, and the summary is otherwise buried in the log.
+      - name: Test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: viaendlink/build/test-results/test/*.xml
+          if-no-files-found: ignore
+
+  # Builds the vendored ViaProxy and ViaBedrock, verifies the local patches are actually in the
+  # finished jar, and packages the complete ViaEndlink.jar with the translator inside it.
+  #
+  # This runs on Windows on purpose, so it can invoke bridge/build.ps1 unchanged. That script is the
+  # single record of which patches must be present, and it exists because ViaBedrock's
+  # class-token-replacer task does not rerun when its inputs change: Gradle recompiles, reports
+  # BUILD SUCCESSFUL, and packages the previous build's classes, so the jar silently lacks the patch.
+  # Reimplementing that check in bash here would mean two lists to keep in step, and the one that
+  # rots is the one that stops catching the bug. A Windows runner bills at twice the rate of Linux;
+  # if that ever matters, cut this job's triggers rather than its verification.
+  bridge:
+    name: Build the translator and verify its patches
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out ViaEndlink
+        uses: actions/checkout@v4
+        with:
+          path: viaendlink
+
+      - name: Check out Endlink
+        uses: actions/checkout@v4
+        with:
+          repository: luibara2/endlink
+          ref: main
+          path: endlink
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # pwsh, not the built-in powershell: PowerShell 5.1 reads .ps1 as the system ANSI codepage,
+      # and the script's comments are not pure ASCII. -JavaHome overrides its default, which points
+      # at a JDK path that only exists on the maintainer's machine.
+      - name: Build ViaProxy and ViaBedrock
+        shell: pwsh
+        working-directory: viaendlink/bridge
+        run: ./build.ps1 -JavaHome "$env:JAVA_HOME"
+
+      - name: Package ViaEndlink.jar
+        working-directory: endlink
+        run: ./gradlew.bat :viaendlink:build --no-daemon
+
+      # The jar an operator actually installs: the addon with the patched translator inside it.
+      - name: Upload ViaEndlink.jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: ViaEndlink.jar
+          path: viaendlink/dist/ViaEndlink.jar
+          if-no-files-found: error

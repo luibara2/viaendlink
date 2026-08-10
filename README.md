@@ -1,5 +1,19 @@
 # ViaEndlink
 
+[![Build](https://github.com/luibara2/viaendlink/actions/workflows/build.yml/badge.svg)](https://github.com/luibara2/viaendlink/actions/workflows/build.yml)
+[![Licence](https://img.shields.io/badge/licence-GPL--3.0-blue)](LICENSE)
+[![Java clients](https://img.shields.io/badge/Minecraft%20Java-1.7.2%20to%2026.2-brightgreen)](#how-it-works)
+[![Bedrock backend](https://img.shields.io/badge/Bedrock%20backend-1.26.40-brightgreen)](#known-limits)
+[![Status](https://img.shields.io/badge/status-early%20work%20in%20progress-orange)](#status-early-work-in-progress)
+
+<!--
+  The licence, version and status badges are static on purpose. shields.io reads the GitHub API
+  anonymously, so while this repository is private every dynamic badge renders as "repo not found".
+  The build badge is served from github.com itself and does resolve, but only for someone signed in
+  with access. Swap the static ones for the dynamic forms used in endlink/endlinkguard if this ever
+  goes public.
+-->
+
 Minecraft: Java Edition players on an Endlink network.
 
 Drop `ViaEndlink.jar` into Endlink's `plugins/` folder and Java clients from **1.7.2 to 26.2** can
@@ -81,8 +95,8 @@ ships a jar without your changes.
 ## Third-party code
 
 `bridge/src/` vendors **ViaProxy** and **ViaBedrock** (both GPL-3.0) so the local patches applied to
-them are reviewable and rebuildable. Those patches are listed in `bridge/README.md`.
-`JAVA-SUPPORT-PLAN.md` records the design and the measurements behind it.
+them are reviewable and rebuildable. Those patches are listed in `bridge/README.md`, which with the
+upstream `.git` directories removed is the only record of what differs from upstream.
 
 ## Licence
 
