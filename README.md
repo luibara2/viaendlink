@@ -1,31 +1,28 @@
 # ViaEndlink
 
 [![Build](https://github.com/luibara2/viaendlink/actions/workflows/build.yml/badge.svg)](https://github.com/luibara2/viaendlink/actions/workflows/build.yml)
-[![Licence](https://img.shields.io/badge/licence-GPL--3.0-blue)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/luibara2/viaendlink?include_prereleases&sort=semver)](https://github.com/luibara2/viaendlink/releases)
+[![Licence](https://img.shields.io/github/license/luibara2/viaendlink)](LICENSE)
+[![Status](https://img.shields.io/badge/status-beta-orange)](#status-beta-and-genuinely-so)
 [![Java clients](https://img.shields.io/badge/Minecraft%20Java-1.7.2%20to%2026.2-brightgreen)](#how-it-works)
 [![Bedrock backend](https://img.shields.io/badge/Bedrock%20backend-1.26.40-brightgreen)](#known-limits)
-[![Status](https://img.shields.io/badge/status-early%20work%20in%20progress-orange)](#status-early-work-in-progress)
 
-<!--
-  The licence, version and status badges are static on purpose. shields.io reads the GitHub API
-  anonymously, so while this repository is private every dynamic badge renders as "repo not found".
-  The build badge is served from github.com itself and does resolve, but only for someone signed in
-  with access. Swap the static ones for the dynamic forms used in endlink/endlinkguard if this ever
-  goes public.
--->
-
-Minecraft: Java Edition players on an Endlink network.
+An addon for **[Endlink](https://github.com/luibara2/endlink)** that lets Minecraft: Java Edition
+players join a Bedrock server.
 
 Drop `ViaEndlink.jar` into Endlink's `plugins/` folder and Java clients from **1.7.2 to 26.2** can
-join a Bedrock server. Remove it and the proxy is Bedrock-only again, with nothing left behind in its
-config. That is the whole installation procedure.
+connect. Remove it and the proxy is Bedrock-only again, with nothing left behind in its config. That
+is the whole installation procedure.
 
-By analogy: if Endlink is Velocity, ViaEndlink is Geyser.
+It is not a standalone program: it needs a running
+[Endlink](https://github.com/luibara2/endlink) proxy, which is what actually talks to your backend
+servers. By analogy — if Endlink is Velocity, ViaEndlink is Geyser.
 
-> ### Status: early work in progress
+> ### Status: beta, and genuinely so
 >
 > This is the least finished part of the project, and the honest summary is that a Java player can
-> get in and move around, not that the experience is good.
+> get in and move around, not that the experience is good. **You cannot open a chest.** Read the
+> whole of this box before installing it anywhere you care about.
 >
 > **Working**, tested against a Minecraft 1.26.40 backend: joining, chat, the player list, terrain
 > loading, backend switching, Mojang account verification, and the player's real IP reaching the
@@ -72,15 +69,30 @@ name prefix to distinguish Java players in chat, and a resource pack URL.
 
 ## Building
 
+ViaEndlink does not build on its own. It compiles against the proxy's addon API, and Endlink picks
+addons up as included builds from **sibling directories**, so clone both side by side and drive the
+build from `endlink/`:
+
 ```
-bridge/build.ps1        # builds the vendored translator and verifies the local patches are in it
-gradle :viaendlink:build
+git clone https://github.com/luibara2/endlink.git
+git clone https://github.com/luibara2/viaendlink.git
+
+cd viaendlink/bridge
+./build.ps1                        # builds the vendored translator, verifies the patches are in it
+
+cd ../../endlink
+./gradlew :viaendlink:build        # -> viaendlink/dist/ViaEndlink.jar
 ```
 
-`dist/ViaEndlink.jar` carries the translator inside it, so an operator places exactly one file.
+Needs a JDK 21+. `dist/ViaEndlink.jar` carries the translator inside it, so an operator places
+exactly one file.
 
 **Do not build the bridge with `gradlew` directly** — see `bridge/README.md` for why that silently
-ships a jar without your changes.
+ships a jar without your changes, and why `build.ps1` reads the finished jar back to check.
+
+`build.ps1` currently needs Windows: it calls `gradlew.bat` and uses Windows path separators. Only
+the bridge step does — the addon itself builds anywhere. The CI workflow in `.github/workflows/`
+runs both steps on every push, so it is a working reference if these instructions ever drift.
 
 ## Known limits
 
@@ -91,6 +103,15 @@ ships a jar without your changes.
 - Java draws titles, subtitles, the action bar and name tags as a single un-wrapped line, so
   multi-line Bedrock text is collapsed there. Signs do get their four lines.
 - Custom addon items, blocks and entities are not mapped to Java equivalents yet.
+
+## Related
+
+| | |
+| --- | --- |
+| [Endlink](https://github.com/luibara2/endlink) | **Required.** The Bedrock proxy this plugs into — without it there is nothing to install ViaEndlink onto |
+| [EndlinkGuard](https://github.com/luibara2/endlinkguard) | The backend plugin. Verifies proxy joins and rejects direct ones — install it on every backend |
+| [Endstone](https://github.com/EndstoneMC/endstone) | The recommended backend server: plugin-capable Bedrock Dedicated Server |
+| [ViaProxy](https://github.com/ViaVersion/ViaProxy) / [ViaBedrock](https://github.com/RaphiMC/ViaBedrock) | The translators doing the real work here. If Java-to-Bedrock translation is broken, the fix usually belongs upstream |
 
 ## Third-party code
 
