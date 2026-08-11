@@ -39,7 +39,6 @@ import net.raphimc.viabedrock.protocol.data.enums.bedrock.generated.ContainerID;
 import net.raphimc.viabedrock.protocol.data.enums.bedrock.generated.ContainerType;
 import net.raphimc.viabedrock.protocol.data.enums.bedrock.generated.InteractPacket_Action;
 import net.raphimc.viabedrock.protocol.data.enums.bedrock.generated.ModalFormCancelReason;
-import net.raphimc.viabedrock.protocol.data.enums.java.generated.ContainerInput;
 import net.raphimc.viabedrock.protocol.data.generated.bedrock.CustomItemTags;
 import net.raphimc.viabedrock.protocol.model.BedrockItem;
 import net.raphimc.viabedrock.protocol.model.FullContainerName;
@@ -50,6 +49,7 @@ import net.raphimc.viabedrock.protocol.types.BedrockTypes;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.function.BooleanSupplier;
 import java.util.logging.Level;
 
 public class InventoryTracker extends StoredObject {
@@ -68,7 +68,7 @@ public class InventoryTracker extends StoredObject {
     private static final int INVENTORY_OPEN_TIMEOUT_TICKS = 20;
 
     private Container currentContainer = null;
-    private DeferredClick deferredClick = null;
+    private BooleanSupplier deferredAction = null;
     private boolean awaitingInventoryOpen;
     private int awaitingInventoryOpenTicks;
     private boolean inventoryScreenAnnounced;
@@ -288,37 +288,47 @@ public class InventoryTracker extends StoredObject {
             throw new IllegalStateException("There is already another container open");
         }
         this.currentContainer = container;
-        this.replayDeferredClick();
+        this.replayDeferredAction();
     }
 
     /**
-     * Holds the click that opened the player's own inventory until the server agrees it is open.
+     * Holds an action against the player's own inventory until the server agrees that screen is open.
      *
      * <p>Java clients open their inventory entirely client-side — no packet is sent — so the first
-     * the server hears of it is a click on a screen it does not believe exists, and it refuses the
-     * move. Announcing the screen and replaying the click once it has been acknowledged is what a
+     * the server hears of it is a request against a screen it does not believe exists, and it
+     * refuses it. Announcing the screen and replaying once it has been acknowledged is what a
      * Bedrock client's ordering amounts to, and when the server plays along it costs the player
-     * nothing: their first click works like the rest.</p>
+     * nothing: their first action works like the rest.</p>
+     *
+     * <p>This gates both ways the player can reach that inventory, because the server draws no
+     * distinction between them. A survival client sends container clicks; a creative one sends the
+     * resulting slot contents instead. Sending item stack requests for either without opening the
+     * screen first gets them rejected — {@code FailedToValidateSrcSlot}, which does not sound like
+     * "that screen is not open" but is what the server says when it is not, and opening the screen
+     * is also what makes it re-send the contents the next request has to quote back.</p>
      *
      * <p>Nothing here assumes it will play along. A server that never answers would otherwise make
      * the inventory permanently dead and silent, so the wait expires (see
-     * {@link #expireInventoryOpenWait()}) and every click after that is handled directly — refused,
-     * perhaps, but refused out loud.</p>
+     * {@link #expireInventoryOpenWait()}) and everything after that is attempted directly —
+     * refused, perhaps, but refused out loud.</p>
      *
-     * <p>Only one is held. A player clicking again before the server answers is asking for the newer
-     * click, and stale ones would be applied against an inventory that has moved on.</p>
+     * <p>Only one is held. A player acting again before the server answers is asking for the newer
+     * action, and a stale one would be applied against an inventory that has moved on.</p>
+     *
+     * @param replay what to do once the screen is open; false means it could not be expressed, and
+     *               the caller's window is put back the way it was
      */
-    public boolean deferClickUntilInventoryOpens(final int revision, final short slot, final byte button, final ContainerInput action) {
+    public boolean deferUntilInventoryOpens(final BooleanSupplier replay) {
         this.announceInventoryScreen();
         if (this.awaitingInventoryOpen || this.inventoryOpenUnanswered) {
             // Already asked and still waiting, or asked before and learnt that this server does not
-            // answer. Holding the click would mean silently eating every click the player makes,
-            // which is worse than one the server might refuse — the caller handles it directly.
+            // answer. Holding this too would mean silently eating everything the player does, which
+            // is worse than something the server might refuse — the caller handles it directly.
             return false;
         }
         this.awaitingInventoryOpen = true;
         this.awaitingInventoryOpenTicks = 0;
-        this.deferredClick = new DeferredClick(revision, slot, button, action);
+        this.deferredAction = replay;
         return true;
     }
 
@@ -360,37 +370,37 @@ public class InventoryTracker extends StoredObject {
 
         this.inventoryOpenUnanswered = true;
         ViaBedrock.getPlatform().getLogger().log(Level.WARNING, "The server did not answer the inventory screen announcement within "
-                + INVENTORY_OPEN_TIMEOUT_TICKS + " ticks. Handling inventory clicks directly from now on; if the server refuses them, "
+                + INVENTORY_OPEN_TIMEOUT_TICKS + " ticks. Acting on the inventory directly from now on; if the server refuses that, "
                 + "the rejection is logged with its reason.");
 
-        final DeferredClick click = this.deferredClick;
-        this.deferredClick = null;
-        this.awaitingInventoryOpen = false;
-        if (click != null && !this.inventoryContainer.handleClick(click.revision(), click.slot(), click.button(), click.action())) {
+        final BooleanSupplier action = this.takeDeferredAction();
+        if (action != null && !action.getAsBoolean()) {
             PacketFactory.sendJavaContainerSetContent(this.user(), this.inventoryContainer);
         }
     }
 
-    private void replayDeferredClick() {
-        final DeferredClick click = this.deferredClick;
-        this.deferredClick = null;
-        this.awaitingInventoryOpen = false;
-        if (click == null || this.currentContainer == null) {
+    private void replayDeferredAction() {
+        final BooleanSupplier action = this.takeDeferredAction();
+        if (action == null || this.currentContainer == null) {
             return;
         }
         if (this.currentContainer.type() != ContainerType.INVENTORY) {
-            // A chest won the race to open. Replaying a click meant for the player's own window
+            // A chest won the race to open. Replaying something meant for the player's own window
             // against someone else's container would move the wrong item, so drop it and put the
             // window the player is actually looking at back the way it is.
             PacketFactory.sendJavaContainerSetContent(this.user(), this.inventoryContainer);
             return;
         }
-        if (!this.currentContainer.handleClick(click.revision(), click.slot(), click.button(), click.action())) {
+        if (!action.getAsBoolean()) {
             PacketFactory.sendJavaContainerSetContent(this.user(), this.inventoryContainer);
         }
     }
 
-    private record DeferredClick(int revision, short slot, byte button, ContainerInput action) {
+    private BooleanSupplier takeDeferredAction() {
+        final BooleanSupplier action = this.deferredAction;
+        this.deferredAction = null;
+        this.awaitingInventoryOpen = false;
+        return action;
     }
 
     public Container getPendingCloseContainer() {

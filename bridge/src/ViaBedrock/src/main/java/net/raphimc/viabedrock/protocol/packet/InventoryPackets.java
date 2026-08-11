@@ -84,6 +84,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BooleanSupplier;
 import java.util.logging.Level;
 
 public class InventoryPackets {
@@ -523,7 +524,8 @@ public class InventoryPackets {
                 // arrive first. It is replayed the moment the server confirms the screen is open —
                 // or after a timeout, if this server never does. Announcing repeatedly is fine: a
                 // Bedrock client does the same when the server does not respond.
-                if (inventoryTracker.deferClickUntilInventoryOpens(revision, slot, button, action)) {
+                if (inventoryTracker.deferUntilInventoryOpens(
+                        () -> inventoryTracker.getInventoryContainer().handleClick(revision, slot, button, action))) {
                     wrapper.cancel();
                     return;
                 }
@@ -552,8 +554,20 @@ public class InventoryPackets {
                 wrapper.cancel();
                 return;
             }
-            if (!ContainerClickTranslator.translateCreativeSlot(wrapper.user(), slot, item)) {
+            final BooleanSupplier apply = () -> {
+                if (ContainerClickTranslator.translateCreativeSlot(wrapper.user(), slot, item)) {
+                    return true;
+                }
                 warnUnexpressibleCreativeSlot(slot, item);
+                return false;
+            };
+            // The server refuses item stack requests against a screen it does not believe is open,
+            // and a creative client announces its inventory screen no more than a survival one does.
+            // So this goes through the same gate: say the screen is open, and hold this until it is.
+            if (!inventoryTracker.isContainerOpen() && inventoryTracker.deferUntilInventoryOpens(apply)) {
+                return;
+            }
+            if (!apply.getAsBoolean()) {
                 PacketFactory.sendJavaContainerSetContent(wrapper.user(), inventoryTracker.getInventoryContainer());
             }
         });
