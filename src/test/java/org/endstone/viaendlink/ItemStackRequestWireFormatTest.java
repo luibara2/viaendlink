@@ -1,0 +1,297 @@
+package org.endstone.viaendlink;
+
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
+import org.cloudburstmc.protocol.bedrock.codec.BedrockCodec;
+import org.cloudburstmc.protocol.bedrock.codec.BedrockCodecHelper;
+import org.cloudburstmc.protocol.bedrock.codec.BedrockPacketDefinition;
+import org.cloudburstmc.protocol.bedrock.codec.v1001.Bedrock_v1001;
+import org.cloudburstmc.protocol.bedrock.codec.v2168.Bedrock_v2168;
+import org.cloudburstmc.protocol.bedrock.data.inventory.ContainerSlotType;
+import org.cloudburstmc.protocol.bedrock.data.inventory.itemstack.request.ItemStackRequest;
+import org.cloudburstmc.protocol.bedrock.data.inventory.itemstack.request.action.ItemStackRequestAction;
+import org.cloudburstmc.protocol.bedrock.data.inventory.itemstack.request.action.ItemStackRequestActionType;
+import org.cloudburstmc.protocol.bedrock.data.inventory.itemstack.request.action.SwapAction;
+import org.cloudburstmc.protocol.bedrock.data.inventory.itemstack.request.action.TransferItemStackRequestAction;
+import org.cloudburstmc.protocol.bedrock.packet.ItemStackRequestPacket;
+import org.cloudburstmc.protocol.common.util.VarInts;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+/**
+ * The bytes ViaBedrock writes for an {@code ItemStackRequest}, read back by the codec that will
+ * actually read them.
+ *
+ * <p>A Java player's inventory click leaves the bridge as a Bedrock 1.26.30 packet, is decoded by
+ * this proxy with the v1001 codec, and is re-encoded for the 1.26.40 backend. Both ends of that hop
+ * are pinned here, because a mistake in either is invisible until a player reports that their
+ * inventory does not work: an item stack request that fails to decode is dropped by the proxy, and
+ * one that decodes into the wrong action reaches the server as a different move than the player
+ * asked for.</p>
+ *
+ * <p>The writer under test lives in the vendored ViaBedrock and cannot be called from here — it is
+ * built into ViaProxy.jar, against a different netty. So these tests build the same byte sequence
+ * with the same primitives and assert the codec's reading of it. That makes the byte layout the
+ * contract, which is what it is on the wire anyway; if ViaBedrock's writer and this drift apart,
+ * the layout documented in each is the thing to compare.</p>
+ *
+ * @see org.endstone.viaendlink.LegacyClientTo2168Translator
+ */
+class ItemStackRequestWireFormatTest {
+
+    // ItemStackRequestActionType ids as protocol 1001 numbers them. 7 and 8 were vacated when
+    // PlaceInItemContainer and TakeFromItemContainer were deprecated, and the gap was left in place
+    // -- so LAB_TABLE_COMBINE is 9, not 7. 1.26.40 closes the gap, which is exactly why re-encoding
+    // through the enum rather than passing the byte through is what makes this hop work.
+    private static final int V1001_TAKE = 0;
+    private static final int V1001_PLACE = 1;
+    private static final int V1001_SWAP = 2;
+    private static final int V1001_DROP = 3;
+    private static final int V1001_CRAFT_RECIPE = 12;
+
+    private static final int CONTAINER_HOTBAR = 28;
+    private static final int CONTAINER_INVENTORY = 29;
+    private static final int CONTAINER_CURSOR = 59;
+
+    @Test
+    void aTakeIntoTheCursorDecodesAsWritten() {
+        ByteBuf buffer = requestBuffer(7, request -> {
+            request.writeByte(V1001_TAKE);
+            request.writeByte(5); // count
+            writeSlot(request, CONTAINER_INVENTORY, 14, 900); // source
+            writeSlot(request, CONTAINER_CURSOR, 0, 0); // destination
+        });
+
+        ItemStackRequestPacket packet = decode(Bedrock_v1001.CODEC, buffer);
+        assertEquals(1, packet.getRequests().size());
+
+        ItemStackRequest request = packet.getRequests().get(0);
+        assertEquals(7, request.getRequestId());
+        assertEquals(1, request.getActions().length);
+
+        TransferItemStackRequestAction take = assertInstanceOf(TransferItemStackRequestAction.class, request.getActions()[0]);
+        assertEquals(ItemStackRequestActionType.TAKE, take.getType());
+        assertEquals(5, take.getCount());
+        assertEquals(ContainerSlotType.INVENTORY, take.getSource().getContainer());
+        assertEquals(14, take.getSource().getSlot());
+        assertEquals(900, take.getSource().getStackNetworkId(),
+                "the stack network id is what the server validates the move against; losing it means "
+                        + "every request is rejected as stale");
+        assertEquals(ContainerSlotType.CURSOR, take.getDestination().getContainer());
+        assertEquals(0, take.getDestination().getSlot());
+    }
+
+    @Test
+    void aPlaceOntoAHotbarSlotDecodesAsWritten() {
+        ByteBuf buffer = requestBuffer(9, request -> {
+            request.writeByte(V1001_PLACE);
+            request.writeByte(1); // count
+            writeSlot(request, CONTAINER_CURSOR, 0, 12); // source
+            writeSlot(request, CONTAINER_HOTBAR, 3, 0); // destination
+        });
+
+        TransferItemStackRequestAction place = assertInstanceOf(TransferItemStackRequestAction.class,
+                decode(Bedrock_v1001.CODEC, buffer).getRequests().get(0).getActions()[0]);
+        assertEquals(ItemStackRequestActionType.PLACE, place.getType());
+        assertEquals(1, place.getCount());
+        assertEquals(ContainerSlotType.CURSOR, place.getSource().getContainer());
+        assertEquals(ContainerSlotType.HOTBAR, place.getDestination().getContainer(),
+                "the player's first nine slots are addressed as the hotbar, not as the inventory");
+        assertEquals(3, place.getDestination().getSlot());
+    }
+
+    @Test
+    void aSwapCarriesNoCount() {
+        ByteBuf buffer = requestBuffer(11, request -> {
+            request.writeByte(V1001_SWAP);
+            writeSlot(request, CONTAINER_CURSOR, 0, 4);
+            writeSlot(request, CONTAINER_INVENTORY, 20, 77);
+        });
+
+        SwapAction swap = assertInstanceOf(SwapAction.class,
+                decode(Bedrock_v1001.CODEC, buffer).getRequests().get(0).getActions()[0]);
+        assertEquals(ContainerSlotType.CURSOR, swap.getSource().getContainer());
+        assertEquals(ContainerSlotType.INVENTORY, swap.getDestination().getContainer());
+        assertEquals(77, swap.getDestination().getStackNetworkId());
+    }
+
+    @Test
+    void aDropCarriesItsRandomlyFlag() {
+        ByteBuf buffer = requestBuffer(13, request -> {
+            request.writeByte(V1001_DROP);
+            request.writeByte(2); // count
+            writeSlot(request, CONTAINER_HOTBAR, 0, 55);
+            request.writeBoolean(false); // randomly
+        });
+
+        ItemStackRequestAction action = decode(Bedrock_v1001.CODEC, buffer).getRequests().get(0).getActions()[0];
+        assertEquals(ItemStackRequestActionType.DROP, action.getType());
+    }
+
+    @Test
+    void severalActionsTravelInOneRequest() {
+        // What a shift-click becomes: one stack split across two destinations, applied all or nothing
+        ByteBuf buffer = requestBuffer(15, 2, request -> {
+            request.writeByte(V1001_PLACE);
+            request.writeByte(40);
+            writeSlot(request, CONTAINER_INVENTORY, 9, 5);
+            writeSlot(request, CONTAINER_INVENTORY, 10, 6);
+
+            request.writeByte(V1001_PLACE);
+            request.writeByte(24);
+            writeSlot(request, CONTAINER_INVENTORY, 9, 5);
+            writeSlot(request, CONTAINER_INVENTORY, 11, 0);
+        });
+
+        ItemStackRequest request = decode(Bedrock_v1001.CODEC, buffer).getRequests().get(0);
+        assertEquals(2, request.getActions().length);
+        assertEquals(40, ((TransferItemStackRequestAction) request.getActions()[0]).getCount());
+        assertEquals(24, ((TransferItemStackRequestAction) request.getActions()[1]).getCount());
+    }
+
+    /**
+     * The whole reason the upgrade edge can be a re-encode rather than a translation: 1.26.40
+     * renumbered the action types, and going through the enum renumbers with it.
+     *
+     * <p>Passing the byte through unchanged would send the backend a different action than the
+     * player asked for — a craft request arriving as a creative-mode item duplication, say — which
+     * the server would either reject or, worse, honour.</p>
+     */
+    @Test
+    void theActionTypeIsRenumberedForTheBackend() {
+        ByteBuf buffer = requestBuffer(17, request -> {
+            request.writeByte(V1001_CRAFT_RECIPE);
+            VarInts.writeUnsignedInt(request, 42); // recipe network id
+            request.writeByte(1); // number of requested crafts
+        });
+
+        ItemStackRequestPacket packet = decode(Bedrock_v1001.CODEC, buffer);
+        assertEquals(ItemStackRequestActionType.CRAFT_RECIPE, packet.getRequests().get(0).getActions()[0].getType());
+
+        ByteBuf reencoded = encode(Bedrock_v2168.CODEC, packet);
+        // request count, request id, action count, then the action type byte
+        reencoded.readByte();
+        VarInts.readInt(reencoded);
+        reencoded.readByte();
+        assertEquals(10, reencoded.readByte(),
+                "1.26.40 dropped the two deprecated action types, so CRAFT_RECIPE moved from 12 to 10");
+    }
+
+    @Test
+    void aRequestSurvivesTheFullUpgradeHop() {
+        ByteBuf buffer = requestBuffer(19, request -> {
+            request.writeByte(V1001_TAKE);
+            request.writeByte(3);
+            writeSlot(request, CONTAINER_INVENTORY, 14, 900);
+            writeSlot(request, CONTAINER_CURSOR, 0, 0);
+        });
+
+        ItemStackRequestPacket asRead = decode(Bedrock_v1001.CODEC, buffer);
+        ItemStackRequestPacket asBackendReadsIt = decode(Bedrock_v2168.CODEC, encode(Bedrock_v2168.CODEC, asRead));
+
+        TransferItemStackRequestAction take = assertInstanceOf(TransferItemStackRequestAction.class,
+                asBackendReadsIt.getRequests().get(0).getActions()[0]);
+        assertEquals(19, asBackendReadsIt.getRequests().get(0).getRequestId());
+        assertEquals(3, take.getCount());
+        assertEquals(ContainerSlotType.INVENTORY, take.getSource().getContainer());
+        assertEquals(14, take.getSource().getSlot());
+        assertEquals(900, take.getSource().getStackNetworkId());
+        assertEquals(ContainerSlotType.CURSOR, take.getDestination().getContainer());
+    }
+
+    /**
+     * Request ids are <b>negative and odd</b>, and the server enforces it.
+     *
+     * <p>Sending a positive one does not degrade gracefully — the backend refuses the packet and
+     * drops the connection, so the player is kicked the instant they touch their inventory:</p>
+     *
+     * <pre>
+     * packet 147 rejected (terminating connection): expected a valid ItemStackRequestId
+     * readNoHeader failed! packetId: 147
+     * </pre>
+     *
+     * <p>The id is a zigzag varint at both ends, so a negative value is a byte long rather than
+     * five, and survives the hop unchanged. This test exists to keep anyone from "tidying" the
+     * sequence back to counting upwards from one.</p>
+     */
+    @Test
+    void requestIdsAreNegativeOddAndSurviveTheHop() {
+        for (int requestId : new int[]{-1, -3, -5, -4097, Integer.MIN_VALUE + 1}) {
+            assertTrue(requestId < 0, "request ids must be negative");
+            assertTrue(Math.abs(requestId % 2) == 1, "request ids must be odd");
+
+            ByteBuf buffer = requestBuffer(requestId, request -> {
+                request.writeByte(V1001_DROP);
+                request.writeByte(1);
+                writeSlot(request, CONTAINER_HOTBAR, 0, 0);
+                request.writeBoolean(false);
+            });
+
+            ItemStackRequestPacket asBackendReadsIt = decode(Bedrock_v2168.CODEC,
+                    encode(Bedrock_v2168.CODEC, decode(Bedrock_v1001.CODEC, buffer)));
+            assertEquals(requestId, asBackendReadsIt.getRequests().get(0).getRequestId());
+        }
+    }
+
+    /** The common ids have to stay small on the wire, or every click pays for it. */
+    @Test
+    void aNegativeRequestIdIsStillOneByte() {
+        ByteBuf buffer = Unpooled.buffer();
+        VarInts.writeInt(buffer, -1);
+        assertEquals(1, buffer.readableBytes(), "zigzag encoding is what keeps -1 a single byte");
+    }
+
+    // --- the byte layout ViaBedrock writes ---------------------------------------------------
+
+    /** A slot info: the container name (with its optional dynamic id), the slot, the stack id. */
+    private static void writeSlot(ByteBuf buffer, int containerName, int slot, int stackNetworkId) {
+        buffer.writeByte(containerName);
+        buffer.writeBoolean(false); // no dynamic id -- only bundles have one
+        buffer.writeByte(slot);
+        VarInts.writeInt(buffer, stackNetworkId);
+    }
+
+    private static ByteBuf requestBuffer(int requestId, java.util.function.Consumer<ByteBuf> actions) {
+        return requestBuffer(requestId, 1, actions);
+    }
+
+    private static ByteBuf requestBuffer(int requestId, int actionCount, java.util.function.Consumer<ByteBuf> actions) {
+        ByteBuf buffer = Unpooled.buffer();
+        VarInts.writeUnsignedInt(buffer, 1); // request count
+        VarInts.writeInt(buffer, requestId);
+        VarInts.writeUnsignedInt(buffer, actionCount);
+        actions.accept(buffer);
+        VarInts.writeUnsignedInt(buffer, 0); // filter string count
+        buffer.writeIntLE(-1); // filter cause: none
+        return buffer;
+    }
+
+    private static ItemStackRequestPacket decode(BedrockCodec codec, ByteBuf buffer) {
+        ByteBuf copy = buffer.copy();
+        try {
+            BedrockPacketDefinition<ItemStackRequestPacket> definition = codec.getPacketDefinition(ItemStackRequestPacket.class);
+            assertNotNull(definition, "the codec must know ItemStackRequestPacket");
+            ItemStackRequestPacket packet = definition.getFactory().get();
+            BedrockCodecHelper helper = codec.createHelper();
+            definition.getSerializer().deserialize(copy, helper, packet);
+            assertTrue(copy.readableBytes() == 0,
+                    "the whole packet must be consumed -- " + copy.readableBytes() + " bytes were left over, "
+                            + "which means the layout written here and the layout the codec expects disagree");
+            return packet;
+        } finally {
+            copy.release();
+        }
+    }
+
+    private static ByteBuf encode(BedrockCodec codec, ItemStackRequestPacket packet) {
+        ByteBuf buffer = Unpooled.buffer();
+        BedrockPacketDefinition<ItemStackRequestPacket> definition = codec.getPacketDefinition(ItemStackRequestPacket.class);
+        definition.getSerializer().serialize(buffer, codec.createHelper(), packet);
+        return buffer;
+    }
+
+}

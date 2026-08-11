@@ -165,6 +165,24 @@ public class JoinPackets {
                         setLocalPlayerAsInitialized.sendToServer(BedrockProtocol.class);
 
                         PacketFactory.sendJavaGameEvent(wrapper.user(), GameEventType.LEVEL_CHUNKS_LOAD_START, 0F);
+
+                        // Push the inventory once the player is actually in the world.
+                        //
+                        // The join sequence is not a good time to be told about items. The server
+                        // sends inventory slots throughout it, including before START_GAME, where
+                        // this protocol has no play state to be in yet and drops them ("Received
+                        // packet INVENTORY_SLOT outside PLAY state"). Even the ones that survive are
+                        // translated into a Java client that is still working through the login it
+                        // was just handed. Either way the player can end up spawning in front of an
+                        // inventory that looks empty and stays that way until something unrelated
+                        // happens to touch a slot.
+                        //
+                        // Sending the tracked contents here costs one packet and makes that
+                        // impossible: this is the first moment the client is unambiguously in the
+                        // world, and the tracker holds everything the server has said so far.
+                        final InventoryTracker inventoryTracker = wrapper.user().get(InventoryTracker.class);
+                        PacketFactory.sendJavaContainerSetContent(wrapper.user(), inventoryTracker.getInventoryContainer());
+                        inventoryTracker.getInventoryContainer().sendSelectedHotbarSlotToClient();
                     } else {
                         wrapper.setPacketType(ClientboundPackets26_1.DISCONNECT);
                         writePlayStatusKickMessage(wrapper, status);

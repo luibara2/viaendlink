@@ -18,6 +18,7 @@
 package net.raphimc.viabedrock.api.model.container.player;
 
 import com.viaversion.viaversion.api.connection.UserConnection;
+import net.raphimc.viabedrock.protocol.data.enums.bedrock.generated.ContainerEnumName;
 import net.raphimc.viabedrock.protocol.data.enums.bedrock.generated.ContainerID;
 import net.raphimc.viabedrock.protocol.data.enums.bedrock.generated.ContainerType;
 import net.raphimc.viabedrock.protocol.model.BedrockItem;
@@ -44,6 +45,22 @@ public class HudContainer extends InventoryRedirectContainer {
         } else {
             return super.javaSlot(slot);
         }
+    }
+
+    /**
+     * Only two regions of the player UI container can be addressed by an item stack request: the
+     * cursor, and the 2x2 crafting grid. The rest are screens Java has no counterpart for, so a
+     * request naming them would be meaningless — null keeps them out rather than guessing.
+     */
+    @Override
+    protected ContainerEnumName requestContainerName(final int slot) {
+        if (slot == 0) {
+            return ContainerEnumName.CursorContainer;
+        }
+        if (slot >= 28 && slot <= 31) {
+            return ContainerEnumName.CraftingInputContainer;
+        }
+        return null;
     }
 
 }

@@ -22,6 +22,7 @@ import com.viaversion.viaversion.api.protocol.packet.PacketWrapper;
 import com.viaversion.viaversion.api.type.Types;
 import net.raphimc.viabedrock.protocol.BedrockProtocol;
 import net.raphimc.viabedrock.protocol.ServerboundBedrockPackets;
+import net.raphimc.viabedrock.protocol.data.enums.bedrock.generated.ContainerEnumName;
 import net.raphimc.viabedrock.protocol.data.enums.bedrock.generated.ContainerID;
 import net.raphimc.viabedrock.protocol.data.enums.bedrock.generated.ContainerType;
 import net.raphimc.viabedrock.protocol.model.BedrockItem;
@@ -38,6 +39,20 @@ public class OffhandContainer extends InventorySubContainer {
     @Override
     public int javaSlot(final int slot) {
         return 45;
+    }
+
+    @Override
+    protected ContainerEnumName requestContainerName(final int slot) {
+        return ContainerEnumName.OffhandContainer;
+    }
+
+    /**
+     * The offhand holds one item, at index 0 of its own container — but item stack requests address
+     * it as slot <b>1</b>. The offset is historical and the server does not accept 0.
+     */
+    @Override
+    protected int requestSlotIndex(final int slot) {
+        return 1;
     }
 
     @Override

@@ -12,10 +12,12 @@ written, built, "verified" by booting the jar, and shipped, and the branding was
 So: wipe the stage that lies, build, then read the finished jar back and check the patches are in it.
 
 Usage:  .\build.ps1  [-TrustStore <path to a truststore, if TLS is intercepted here>]
+                     [-Offline]  same purpose, no truststore needed, but only on a warm cache
 #>
 [CmdletBinding()]
 param(
     [string] $TrustStore,
+    [switch] $Offline,
     [string] $JavaHome = "C:\Program Files\Eclipse Adoptium\jdk-21.0.12.8-hotspot"
 )
 
@@ -26,6 +28,11 @@ $viaProxy = Join-Path $root "src\ViaProxy"
 $dist = Join-Path $root "dist\ViaProxy.jar"
 
 $env:JAVA_HOME = $JavaHome
+# Resolving dependencies is the only step here that needs the network, and on a machine whose TLS is
+# intercepted it is also the only step that fails (PKIX path building). A truststore fixes that
+# properly; -Offline sidesteps it by not looking at all, which is enough once the cache already holds
+# these versions -- and means an unrelated change does not have to stop for certificate plumbing.
+$networkArgs = if ($Offline) { @("--offline") } else { @() }
 if ($TrustStore) {
     $env:GRADLE_OPTS = "-Djavax.net.ssl.trustStore=$TrustStore -Djavax.net.ssl.trustStorePassword=changeit"
 }
@@ -57,7 +64,39 @@ $expectations = @(
     @{ Class   = "net/raphimc/viabedrock/protocol/packet/ResourcePackPackets.class"
        Present = "deferring the stack-finished reply"
        Absent  = $null
-       What    = "pack handshake is not ended early by a fake-accepted pack" }
+       What    = "pack handshake is not ended early by a fake-accepted pack" },
+    @{ Class   = "net/raphimc/viabedrock/api/model/container/ContainerClickTranslator.class"
+       Present = "quickMove"
+       Absent  = $null
+       What    = "java inventory clicks become bedrock item stack requests" },
+    @{ Class   = "net/raphimc/viabedrock/protocol/storage/ItemStackRequestTracker.class"
+       Present = "handleResponse"
+       Absent  = $null
+       What    = "item stack requests are tracked, predicted and rolled back on rejection" },
+    @{ Class   = "net/raphimc/viabedrock/protocol/storage/InventoryTracker.class"
+       Present = "synchroniseDirtyContainers"
+       Absent  = $null
+       What    = "inventory changes reach the client whichever packet carried them" },
+    @{ Class   = "net/raphimc/viabedrock/protocol/packet/InventoryPackets.class"
+       Present = "ITEM_STACK_RESPONSE"
+       Absent  = $null
+       What    = "the server's item stack responses are applied instead of dropped" },
+    @{ Class   = "net/raphimc/viabedrock/protocol/packet/ClientPlayerPackets.class"
+       Present = "ItemStackRequestTracker"
+       Absent  = $null
+       What    = "dropping an item goes through the server-authoritative path" },
+    @{ Class   = "net/raphimc/viabedrock/experimental/types/inventory/InventoryTransactionPacketType.class"
+       Present = "Expected InventoryActionData"
+       Absent  = $null
+       What    = "server-sent inventory transactions are read with the action list's presence boolean" },
+    @{ Class   = "net/raphimc/viabedrock/protocol/storage/InventoryTracker.class"
+       Present = "announceInventoryScreen"
+       Absent  = $null
+       What    = "the player's own inventory screen is announced, and not waited on forever" },
+    @{ Class   = "net/raphimc/viabedrock/protocol/storage/ChunkTracker.class"
+       Present = "reportUnrecognisedBlockEntities"
+       Absent  = $null
+       What    = "a chunk's block entities that could not be placed are named rather than dropped in silence" }
 )
 
 function Invoke-Gradle([string] $directory, [string[]] $gradleArgs) {
@@ -84,13 +123,13 @@ Write-Host "== Clearing the stage with the broken up-to-date check (ViaBedrock c
 Remove-Item -Recurse -Force (Join-Path $viaBedrock "build\classTokenReplacer"), (Join-Path $viaBedrock "build\libs") -ErrorAction SilentlyContinue
 
 Write-Host "== Building ViaBedrock"
-Invoke-Gradle $viaBedrock @("jar")
+Invoke-Gradle $viaBedrock (@("jar") + $networkArgs)
 
 Write-Host "== Building ViaProxy (fat jar)"
 # The fat jar's up-to-date check does not notice a changed ViaBedrock artifact either; removing the
 # output is what forces it to repackage.
 Remove-Item (Join-Path $viaProxy "build\libs\*.jar") -Force -ErrorAction SilentlyContinue
-Invoke-Gradle $viaProxy @("build", "-x", "test")
+Invoke-Gradle $viaProxy (@("build", "-x", "test") + $networkArgs)
 
 $built = Get-ChildItem (Join-Path $viaProxy "build\libs") -Filter "ViaProxy-*-SNAPSHOT.jar" |
     Where-Object { $_.Name -notlike "*java8*" -and $_.Name -notlike "*sources*" -and $_.Name -notlike "*javadoc*" } |

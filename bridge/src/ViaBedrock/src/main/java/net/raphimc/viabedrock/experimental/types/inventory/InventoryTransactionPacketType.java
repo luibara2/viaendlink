@@ -64,6 +64,17 @@ public class InventoryTransactionPacketType extends Type<BedrockInventoryTransac
         }
 
         ComplexInventoryTransaction_Type type = ComplexInventoryTransaction_Type.getByValue(BedrockTypes.UNSIGNED_VAR_INT.read(buffer));
+
+        // The action list is preceded by a presence boolean, exactly like the transaction type above.
+        // Skipping it read the boolean itself as the list length -- always 1, because it is always
+        // true -- and then read every field of that one action one byte early. The source type came
+        // out of the real action count, so a server-sent transaction reporting "slot 3 of your
+        // inventory now holds this" was read as a GLOBAL source and silently ignored, which is what
+        // made items picked up off the ground not appear until something else refreshed the slot.
+        if (!buffer.readBoolean()) {
+            throw new IllegalStateException("Expected InventoryActionData");
+        }
+
         InventoryActionData[] actions = inventoryActionDataType.read(buffer);
         InventoryTransactionData transactionData = switch (type) {
             case NormalTransaction ->  new InventoryTransactionData.NormalTransactionData();
@@ -107,9 +118,14 @@ public class InventoryTransactionPacketType extends Type<BedrockInventoryTransac
             throw new IllegalStateException("ItemRewriter not found for user " + user);
         }
 
-        BedrockTypes.VAR_INT.write(buffer, bedrockInventoryTransaction.legacyRequestId());
-        Types.BOOLEAN.write(buffer, bedrockInventoryTransaction.legacyRequestId() != 0);
-        if (bedrockInventoryTransaction.legacyRequestId() != 0) {
+        final int legacyRequestId = bedrockInventoryTransaction.legacyRequestId();
+        BedrockTypes.VAR_INT.write(buffer, legacyRequestId);
+        // The slot list only exists for the request ids the reader will look for it under. Writing
+        // it under any other id puts bytes on the wire that nothing reads back, and the rest of the
+        // packet is then parsed from the wrong offset.
+        final boolean hasLegacySlots = legacyRequestId < -1 && (legacyRequestId & 1) == 0;
+        Types.BOOLEAN.write(buffer, hasLegacySlots);
+        if (hasLegacySlots) {
             ExperimentalBedrockTypes.LEGACY_SET_ITEM_SLOT_DATA.write(buffer, bedrockInventoryTransaction.legacySlots().toArray(new LegacySetItemSlotData[0]));
         }
 

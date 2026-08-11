@@ -27,6 +27,7 @@ import com.viaversion.viaversion.protocols.v1_21_11to26_1.packet.ClientboundPack
 import net.raphimc.viabedrock.api.model.container.Container;
 import net.raphimc.viabedrock.protocol.BedrockProtocol;
 import net.raphimc.viabedrock.protocol.ServerboundBedrockPackets;
+import net.raphimc.viabedrock.protocol.data.enums.bedrock.generated.ContainerEnumName;
 import net.raphimc.viabedrock.protocol.data.enums.bedrock.generated.ContainerID;
 import net.raphimc.viabedrock.protocol.data.enums.bedrock.generated.ContainerType;
 import net.raphimc.viabedrock.protocol.data.enums.bedrock.generated.InteractPacket_Action;
@@ -85,6 +86,43 @@ public class InventoryContainer extends Container {
         } else {
             return super.javaSlot(slot);
         }
+    }
+
+    /**
+     * The player's 36 slots are one container to Bedrock but two <em>names</em>: the hotbar and the
+     * inventory proper. An item stack request that calls slot 3 "inventory" rather than "hotbar" is
+     * rejected, so the split matters even though both live at container id 0.
+     */
+    @Override
+    protected ContainerEnumName requestContainerName(final int slot) {
+        return slot < 9 ? ContainerEnumName.HotbarContainer : ContainerEnumName.InventoryContainer;
+    }
+
+    /**
+     * The player's own window, whose layout no other container shares: result, crafting grid,
+     * armour, inventory, hotbar, offhand — spread across four Bedrock containers.
+     */
+    @Override
+    public ContainerSlot resolveJavaSlot(final int javaSlot) {
+        final InventoryTracker inventoryTracker = this.user.get(InventoryTracker.class);
+        if (javaSlot >= 1 && javaSlot <= 4) { // 2x2 crafting grid, which Bedrock keeps in the UI container
+            return new ContainerSlot(inventoryTracker.getHudContainer(), javaSlot + 27);
+        }
+        if (javaSlot >= 5 && javaSlot <= 8) {
+            return new ContainerSlot(inventoryTracker.getArmorContainer(), javaSlot - 5);
+        }
+        if (javaSlot >= 9 && javaSlot <= 35) {
+            return new ContainerSlot(this, javaSlot);
+        }
+        if (javaSlot >= 36 && javaSlot <= 44) {
+            return new ContainerSlot(this, javaSlot - 36);
+        }
+        if (javaSlot == 45) {
+            return new ContainerSlot(inventoryTracker.getOffhandContainer(), 0);
+        }
+        // Slot 0 is the crafting result. Taking from it is a craft, not a move: it needs the recipe
+        // network id the client would have matched, which we do not track, so it resyncs instead.
+        return null;
     }
 
     @Override

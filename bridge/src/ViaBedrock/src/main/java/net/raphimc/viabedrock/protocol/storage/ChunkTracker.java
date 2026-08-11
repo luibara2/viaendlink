@@ -18,6 +18,7 @@
 package net.raphimc.viabedrock.protocol.storage;
 
 import com.viaversion.nbt.tag.CompoundTag;
+import com.viaversion.nbt.tag.StringTag;
 import com.viaversion.viaversion.api.connection.StoredObject;
 import com.viaversion.viaversion.api.connection.UserConnection;
 import com.viaversion.viaversion.api.minecraft.BlockPosition;
@@ -61,6 +62,7 @@ import net.raphimc.viabedrock.protocol.rewriter.BlockStateRewriter;
 import net.raphimc.viabedrock.protocol.types.BedrockTypes;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 import java.util.stream.Collectors;
 
@@ -69,6 +71,8 @@ import java.util.stream.Collectors;
 public class ChunkTracker extends StoredObject {
 
     private static final byte[] FULL_LIGHT = new byte[ChunkSectionLight.LIGHT_LENGTH];
+    /** Block entity types already reported as unplaceable, so a world full of them logs once each. */
+    private static final Set<String> WARNED_UNPLACEABLE_BLOCK_ENTITIES = ConcurrentHashMap.newKeySet();
 
     static {
         Arrays.fill(FULL_LIGHT, (byte) 0xFF);
@@ -220,6 +224,46 @@ public class ChunkTracker extends StoredObject {
         }
 
         return remappedBlockState;
+    }
+
+    /**
+     * Names block entities a loaded chunk carried that the block loop above could not place.
+     *
+     * <p>A chunk sends its block entities as a flat list of NBT, and they are only turned into Java
+     * ones for positions whose block state is <em>recognised</em> as carrying a block entity. So a
+     * block state that fails to resolve — a new property, a state this mapping set does not know —
+     * does not announce itself: the block still renders from the palette, and the block entity is
+     * quietly left behind. On a chest that means an outline with nothing drawn inside it, because a
+     * Java chest is drawn entirely by its block entity renderer, and a container the server will
+     * open and this side will immediately close again for sitting on a block it does not believe is
+     * a chest.</p>
+     *
+     * <p>Placing a chest goes down a different path — a block update carrying a runtime id — which
+     * is why the same chest can work when placed and be invisible after a rejoin. Once per block
+     * entity type is enough to say which one, and quiet enough for a world full of them.</p>
+     */
+    private void reportUnrecognisedBlockEntities(final BedrockChunk chunk) {
+        if (chunk.blockEntities().isEmpty()) {
+            return;
+        }
+        final BlockStateRewriter blockStateRewriter = this.user().get(BlockStateRewriter.class);
+        for (BlockEntity blockEntity : chunk.blockEntities()) {
+            if (!(blockEntity instanceof BedrockBlockEntity bedrockBlockEntity)) {
+                continue;
+            }
+            final int blockState = this.getBlockState(bedrockBlockEntity.position());
+            final String tag = blockStateRewriter.tag(blockState);
+            if (BlockEntityRewriter.isBlockEntity(tag)) {
+                continue;
+            }
+            final String id = bedrockBlockEntity.tag().get("id") instanceof StringTag idTag ? idTag.getValue() : "unknown";
+            if (WARNED_UNPLACEABLE_BLOCK_ENTITIES.add(id)) {
+                ViaBedrock.getPlatform().getLogger().log(Level.WARNING, "A loaded chunk carried a '" + id + "' block entity at "
+                        + bedrockBlockEntity.position() + ", but the block state there (" + blockState + ", tag " + tag
+                        + ") is not one this mapping set knows carries a block entity. It was dropped, so the Java client will "
+                        + "not render or be able to use it.");
+            }
+        }
     }
 
     public BedrockBlockEntity getBlockEntity(final BlockPosition blockPosition) {
@@ -624,6 +668,8 @@ public class ChunkTracker extends StoredObject {
                 remappedBiomePalette.addId(BedrockProtocol.MAPPINGS.getJavaBiomes().get("the_void"));
             }
         }
+
+        this.reportUnrecognisedBlockEntities(chunk);
 
         final IntSet motionBlockingBlockStates = BedrockProtocol.MAPPINGS.getJavaHeightMapBlockStates().get("motion_blocking");
         final int[] worldSurface = new int[16 * 16];

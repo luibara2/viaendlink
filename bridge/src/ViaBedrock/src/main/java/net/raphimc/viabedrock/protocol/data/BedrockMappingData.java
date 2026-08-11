@@ -115,6 +115,7 @@ public class BedrockMappingData extends MappingDataBase {
     private Map<String, Map<BlockState, JavaItemMapping>> bedrockToJavaBlockItems;
     private Map<String, Map<Integer, JavaItemMapping>> bedrockToJavaMetaItems;
     private Map<ContainerType, Integer> bedrockToJavaContainers;
+    private List<String> javaMenus;
 
     // Entities
     private BiMap<String, Integer> bedrockEntities;
@@ -554,6 +555,8 @@ public class BedrockMappingData extends MappingDataBase {
             for (JsonElement menuJson : javaMenusJson) {
                 javaMenus.add(Key.namespaced(menuJson.getAsString()));
             }
+
+            this.javaMenus = javaMenus;
 
             final JsonObject bedrockToJavaContainersJson = this.readJson("custom/container_mappings.json");
             this.bedrockToJavaContainers = new EnumMap<>(ContainerType.class);
@@ -1142,6 +1145,18 @@ public class BedrockMappingData extends MappingDataBase {
 
     public Map<ContainerType, Integer> getBedrockToJavaContainers() {
         return this.bedrockToJavaContainers;
+    }
+
+    /**
+     * The Java menu id for an identifier, or null if this Java version has no such menu.
+     *
+     * <p>The per-{@code ContainerType} mapping cannot answer every case on its own: one Bedrock
+     * container type covers both the single and the double chest, and only the size tells them
+     * apart. This is how the caller reaches the other menu once it knows which it is.</p>
+     */
+    public Integer getJavaMenuId(final String identifier) {
+        final int javaId = this.javaMenus.indexOf(Key.namespaced(identifier));
+        return javaId == -1 ? null : javaId;
     }
 
     public BiMap<String, Integer> getBedrockEntities() {

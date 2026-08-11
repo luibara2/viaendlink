@@ -22,12 +22,17 @@ import com.viaversion.viaversion.api.minecraft.BlockPosition;
 import com.viaversion.viaversion.api.minecraft.item.Item;
 import com.viaversion.viaversion.libs.mcstructs.text.TextComponent;
 import net.raphimc.viabedrock.ViaBedrock;
+import net.raphimc.viabedrock.api.model.container.player.InventoryContainer;
+import net.raphimc.viabedrock.protocol.data.enums.bedrock.generated.ContainerEnumName;
 import net.raphimc.viabedrock.protocol.data.enums.bedrock.generated.ContainerType;
 import net.raphimc.viabedrock.protocol.data.enums.java.generated.ContainerInput;
 import net.raphimc.viabedrock.protocol.model.BedrockItem;
+import net.raphimc.viabedrock.protocol.model.ItemStackRequestSlot;
 import net.raphimc.viabedrock.protocol.rewriter.ItemRewriter;
+import net.raphimc.viabedrock.protocol.storage.InventoryTracker;
 
 import java.util.Arrays;
+import java.util.Objects;
 import java.util.Set;
 import java.util.logging.Level;
 
@@ -40,6 +45,7 @@ public abstract class Container {
     protected final BlockPosition position;
     protected final BedrockItem[] items;
     protected final Set<String> validBlockTags;
+    private boolean dirty;
 
     public Container(final UserConnection user, final byte containerId, final ContainerType type, final TextComponent title, final BlockPosition position, final int size, final String... validBlockTags) {
         this.user = user;
@@ -61,8 +67,67 @@ public abstract class Container {
         this.validBlockTags = validBlockTags;
     }
 
+    /**
+     * Turns one Java {@code ContainerClick} into an {@code ItemStackRequest}.
+     *
+     * @return true if a request was sent and the client's own prediction can stand; false if the
+     *         click could not be expressed, in which case the caller resyncs the window so the
+     *         player sees the unchanged truth rather than a move that never happened
+     */
     public boolean handleClick(final int revision, final short slot, final byte button, final ContainerInput action) {
-        return false;
+        return ContainerClickTranslator.translate(this.user, this, slot, button, action);
+    }
+
+    /**
+     * Where this slot sits in the addressing scheme {@code ItemStackRequest}s use, or null if it
+     * cannot be addressed at all.
+     *
+     * <p>Bedrock names slots by <em>kind</em> rather than by container, so this is not simply the
+     * container's own identity — see {@link ItemStackRequestSlot}. The default is the plain
+     * block-entity container a chest, barrel or hopper presents.</p>
+     */
+    public ItemStackRequestSlot requestSlot(final int slot) {
+        final ContainerEnumName containerName = this.requestContainerName(slot);
+        if (containerName == null) {
+            return null;
+        }
+        final Integer netId = this.getItem(slot).netId();
+        return new ItemStackRequestSlot(containerName, this.requestSlotIndex(slot), netId == null ? 0 : netId);
+    }
+
+    protected ContainerEnumName requestContainerName(final int slot) {
+        return ContainerEnumName.LevelEntityContainer;
+    }
+
+    protected int requestSlotIndex(final int slot) {
+        return slot;
+    }
+
+    /**
+     * Resolves a slot of the open Java window to the Bedrock container that actually holds it.
+     *
+     * <p>A Java window is one flat list of slots; on Bedrock the same slots are spread across
+     * several containers — the block's own, the player's inventory, their armour, their offhand.
+     * This is the seam between the two views. The layout here is the generic one: the container's
+     * own slots, then 27 of inventory, then the 9 hotbar slots.</p>
+     */
+    public ContainerSlot resolveJavaSlot(final int javaSlot) {
+        if (javaSlot >= 0 && javaSlot < this.size()) {
+            return new ContainerSlot(this, javaSlot);
+        }
+        final InventoryContainer inventory = this.user.get(InventoryTracker.class).getInventoryContainer();
+        final int playerSlot = javaSlot - this.size();
+        if (playerSlot >= 0 && playerSlot < 27) { // Main inventory, which is Bedrock slots 9-35
+            return new ContainerSlot(inventory, playerSlot + 9);
+        }
+        if (playerSlot >= 27 && playerSlot < 36) { // Hotbar, which is Bedrock slots 0-8
+            return new ContainerSlot(inventory, playerSlot - 27);
+        }
+        return null;
+    }
+
+    /** A slot, once it is known which Bedrock container owns it. */
+    public record ContainerSlot(Container container, int slot) {
     }
 
     public void clearItems() {
@@ -95,8 +160,20 @@ public abstract class Container {
 
         final BedrockItem oldItem = this.items[slot];
         this.items[slot] = item;
+        if (!Objects.equals(oldItem, item)) {
+            this.dirty = true;
+        }
         this.onSlotChanged(slot, oldItem, item);
         return true;
+    }
+
+    /** Whether this container has changed since the Java client was last told its whole contents. */
+    public boolean isDirty() {
+        return this.dirty;
+    }
+
+    public void markClean() {
+        this.dirty = false;
     }
 
     public boolean setItems(final BedrockItem[] items) {
@@ -139,12 +216,21 @@ public abstract class Container {
         return this.position;
     }
 
+    /**
+     * Whether the block still under this container is one it could belong to.
+     *
+     * <p>Declaring no tags means "do not check". Only blocks with a block entity have a tag at all,
+     * so a container anchored to a plain block — a crafting table, an anvil — would otherwise be
+     * judged invalid on the very first tick and closed again the instant it opened.</p>
+     */
     public boolean isValidBlockTag(final String tag) {
+        if (this.validBlockTags.isEmpty()) {
+            return true;
+        }
         if (tag == null) {
             return false;
-        } else {
-            return this.validBlockTags.contains(tag);
         }
+        return this.validBlockTags.contains(tag);
     }
 
     protected void onSlotChanged(final int slot, final BedrockItem oldItem, final BedrockItem newItem) {

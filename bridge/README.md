@@ -43,6 +43,19 @@ Keep this list current. Everything else is upstream and should stay that way, so
 | `src/ViaBedrock/.../protocol/packet/HudPackets.java` | Collapses breaks in titles, subtitles and the action bar to a separator (`endstone.bridge.titleLineSeparator`, default a space) — Java draws all three as one un-wrapped line. |
 | `src/ViaBedrock/.../protocol/packet/JoinPackets.java` | Tab list header/footer are configurable and no longer advertise ViaBedrock. `endstone.bridge.tabListHeader` defaults to the level name, `endstone.bridge.tabListFooter` to empty. |
 | `src/ViaBedrock/.../protocol/packet/ResourcePackPackets.java`, `.../storage/ResourcePackLoadStateTracker.java` | A "stack finished" reply is held until the server's pack stack actually arrives, instead of being sent the moment the Java client says the pack loaded. See below. |
+| `src/ViaBedrock/.../protocol/model/ItemStackRequestSlot.java`, `.../model/ItemStackRequestAction.java` | **New files.** The `ItemStackRequest` wire model — slot addressing and the take/place/swap/drop/destroy/craft actions. See "Inventory" below. |
+| `src/ViaBedrock/.../protocol/storage/ItemStackRequestTracker.java` | **New file.** Sends requests, predicts the result locally, and reconciles or rolls back when the server answers. |
+| `src/ViaBedrock/.../api/model/container/ContainerClickTranslator.java` | **New file.** Turns a Java `ContainerClick` into the Bedrock item movements that mean the same thing, including the destination search Java's shift-click needs. |
+| `src/ViaBedrock/.../api/model/container/Container.java` and its subclasses | Slot addressing (`requestSlot`, `resolveJavaSlot`) and a real `handleClick`, which upstream leaves returning false. Empty `validBlockTags` now means "do not check" so a container on a block with no block entity is not closed on its first tick. |
+| `src/ViaBedrock/.../api/model/container/ChestContainer.java` | Takes a size and a slot name, so one class covers chests, barrels, shulkers, hoppers, droppers and crafters. |
+| `src/ViaBedrock/.../protocol/packet/InventoryPackets.java` | Handles `ITEM_STACK_RESPONSE`; opens the container types that are plain storage; handles a click on the player's own inventory before the server has acknowledged the screen. |
+| `src/ViaBedrock/.../protocol/packet/ClientPlayerPackets.java` | Dropping an item is an `ItemStackRequest`, not the legacy inventory transaction. |
+| `src/ViaBedrock/.../protocol/packet/JoinPackets.java` | Pushes the tracked inventory to the Java client at `PlayerSpawn`. |
+| `src/ViaBedrock/.../protocol/data/BedrockMappingData.java` | `getJavaMenuId(identifier)`, so the double chest can reach `generic_9x6` — one Bedrock container type covers both chest sizes. |
+| `src/ViaBedrock/.../experimental/types/inventory/InventoryTransactionPacketType.java` | Reads the presence boolean that precedes the action list, which upstream omits. Without it the boolean is taken as the list length and every field after it is read one byte early, so a server-sent slot change — an item picked up off the ground — parses as a source nothing handles and is dropped in silence. The write side now announces the legacy slot list only for the request ids the reader looks for it under. |
+| `src/ViaBedrock/.../experimental/ExperimentalFeatures.java` | A server-sent inventory transaction is applied whether or not it carries a legacy request id, and reaches the Java client through the tracker's tick like every other change rather than pushing its own packet. |
+| `src/ViaBedrock/.../protocol/storage/InventoryTracker.java` | Announces the player's own inventory screen (`INTERACT OpenInventory`), and gives up waiting for the server to acknowledge it after a second instead of holding the click forever. |
+| `src/ViaBedrock/.../protocol/storage/ChunkTracker.java` | Names any block entity a loaded chunk carried that could not be placed, once per type. Silence here looks like an invisible chest. |
 
 Both patches are **inert unless `endstone.bridge.secret` is set**, which only the proxy does. This
 jar still behaves exactly like upstream ViaProxy when run standalone.
@@ -66,6 +79,60 @@ sent, so the log shows a player who fully joined and was then dropped for no vis
 The proxy is holding `acceptServerResourcePacks=true` on purpose (a Java client cannot load a Bedrock
 pack, and ViaBedrock's converted-pack server is on loopback where a remote player cannot reach it),
 so the spoofer stays and ViaBedrock holds the reply until the stack arrives instead.
+
+### Inventory: upstream stops at "read only"
+
+Upstream ViaBedrock shows a Java player their inventory and lets them do nothing with it.
+`Container.handleClick` returns false unconditionally, so every click was answered by re-sending the
+window — the item snapped back — and `ITEM_STACK_RESPONSE` had no handler at all, which means the
+fallback in `BedrockProtocol.registerPackets` cancelled it. Dropping an item and right-clicking a
+block were implemented only inside `enable-experimental-features`, which is off by default, and
+`registerPackets` cancels every serverbound packet with no handler: a Java player's right-click
+reached the server as nothing whatsoever, so no container ever opened.
+
+The backends run with `inventoriesServerAuth=true`, which decides the shape of the fix. Under
+server-authoritative inventory the client does not report clicks; it sends an `ItemStackRequest`
+naming the movements it wants, and the server applies the list whole or rejects it whole. Three
+things must agree with the server or the request is refused: the slot's *kind* (the player's own 36
+slots are addressed under two different names, and the offhand's only slot is addressed as slot 1),
+the slot index within that kind (the 2x2 crafting grid is 28-31), and the stack network id, which is
+the server's handle on the exact stack and is what makes a stale request safe to refuse.
+
+The response says only how many items ended up where — never *which* item — so it cannot rebuild
+the inventory on its own, only confirm or deny what we already believed. Hence the cycle in
+`ItemStackRequestTracker`: snapshot, predict and show the player the result at once, then reconcile
+counts and stack ids from the response, or restore the snapshot if the server said no. Rolling back
+is the half that matters; without it a rejected click leaves the player building on an item that
+does not exist.
+
+**The request id must be negative and odd** — -1, -3, -5, … This is validated, and failing it is not
+a soft failure. BDS refuses the packet and drops the connection:
+
+```
+packet 147 rejected (terminating connection): expected a valid ItemStackRequestId
+readNoHeader failed! packetId: 147
+```
+
+which the player experiences as being kicked the instant they pick anything up in their inventory.
+The sign is what distinguishes a client's id from a server-generated one. (This also settled an open
+question: BDS *does* process the standalone `ItemStackRequestPacket`. Vanilla clients embed the
+request in `PlayerAuthInput` instead and ViaBedrock never sets that flag, so it was worth confirming
+the standalone route is honoured — it is.)
+
+**One owner tells the Java client.** `Container.setItem` marks its container dirty and
+`InventoryTracker.tick` sends the contents of anything dirty, once per tick. Nothing else pushes
+inventory state. That is deliberate: while each packet handler forwarded its own change, whether the
+player saw a change depended on which packet the server happened to use to report it — picking an
+item up left the inventory looking unchanged until something unrelated forced a refresh, while
+dropping one worked, because only some paths remembered to send. Converging on the tracked state
+each tick makes that class of bug impossible and coalesces bursts of slot updates into one send.
+
+**Not implemented.** Crafting tables, anvils, enchanting tables, brewing stands, grindstones and
+looms are still refused at `CONTAINER_OPEN`. Their result slot is not a move but a craft, carrying
+the recipe network id the client matched, and nothing here parses `CRAFTING_DATA` — so opening them
+would show a result the player could never take. Creative middle-click, the click-drag and the
+double-click gather resync instead of translating, for the same reason: no single request expresses
+them.
 
 ### What the extra claims are for
 

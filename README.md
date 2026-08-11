@@ -26,12 +26,14 @@ servers. By analogy — if Endlink is Velocity, ViaEndlink is Geyser.
 >
 > **Working**, tested against a Minecraft 1.26.40 backend: joining, chat, the player list, terrain
 > loading, backend switching, Mojang account verification, and the player's real IP reaching the
-> backend.
+> backend. Also: moving, dropping and swapping items, and storage containers — chests (single and
+> double), barrels, shulker boxes, hoppers, droppers, dispensers and crafters.
 >
-> **Not working yet**: containers (chests, crafting tables) do not open; movement rubber-bands,
-> because a Java client predicts motion and a Bedrock server does not agree; custom addon items,
-> blocks and entities have no Java equivalent and render as unknown; block entities loaded from
-> chunks are unreliable.
+> **Not working yet**: crafting tables, anvils, enchanting tables and brewing stands do not open,
+> because taking their result is a craft carrying a recipe id and nothing here reads the recipe list
+> yet; movement rubber-bands, because a Java client predicts motion and a Bedrock server does not
+> agree; custom addon items, blocks and entities have no Java equivalent and render as unknown;
+> block entities loaded from chunks are unreliable.
 >
 > ViaBedrock, which does the actual translation, is upstream-described as early in development. Much
 > of the above is inherited from that rather than added here.
@@ -98,8 +100,17 @@ runs both steps on every push, so it is a working reference if these instruction
 
 - ViaBedrock speaks Bedrock 1.26.30 and nothing newer, so installing this addon also lets real
   1.26.30 Bedrock clients onto 1.26.40 backends.
-- ViaBedrock is upstream-described as early in development. Containers, block entities and movement
-  are imperfect.
+- ViaBedrock is upstream-described as early in development. Block entities and movement are
+  imperfect.
+- Containers that *craft* — crafting table, anvil, enchanting table, brewing stand, grindstone,
+  loom — are refused rather than opened. Taking their result is not a move but a craft request
+  naming the recipe, and the recipe list the server sends is not parsed yet, so the screen would
+  show a result the player could never take. Storage containers work.
+- Creative middle-click, click-dragging a stack across slots, and double-clicking to gather are not
+  translated: no single Bedrock request expresses them, so the click is refused and the window is
+  resynced.
+- Inventory interaction needs `interactionFeatures=true` (the default), which turns on ViaBedrock's
+  own `enable-experimental-features`. With it off, right-clicking does nothing at all.
 - Java draws titles, subtitles, the action bar and name tags as a single un-wrapped line, so
   multi-line Bedrock text is collapsed there. Signs do get their four lines.
 - Custom addon items, blocks and entities are not mapped to Java equivalents yet.

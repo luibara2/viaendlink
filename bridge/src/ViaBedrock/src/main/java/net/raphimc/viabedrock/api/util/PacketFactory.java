@@ -151,7 +151,7 @@ public class PacketFactory {
 
     public static void writeJavaContainerSetContent(final PacketWrapper wrapper, final Container container) {
         wrapper.write(Types.VAR_INT, (int) container.javaContainerId()); // container id
-        wrapper.write(Types.VAR_INT, 0); // revision
+        wrapper.write(Types.VAR_INT, wrapper.user().get(InventoryTracker.class).nextRevision()); // revision
         wrapper.write(VersionedTypes.V26_2.itemArray, container.getJavaItems()); // items
         wrapper.write(VersionedTypes.V26_2.item, wrapper.user().get(InventoryTracker.class).getHudContainer().getJavaItem(0)); // cursor item
     }

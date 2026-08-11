@@ -68,6 +68,7 @@ import net.raphimc.viabedrock.protocol.BedrockProtocol;
 import net.raphimc.viabedrock.protocol.ClientboundBedrockPackets;
 import net.raphimc.viabedrock.protocol.ServerboundBedrockPackets;
 import net.raphimc.viabedrock.protocol.data.enums.bedrock.generated.*;
+import net.raphimc.viabedrock.protocol.data.generated.bedrock.CustomBlockTags;
 import net.raphimc.viabedrock.protocol.data.enums.java.generated.ContainerInput;
 import net.raphimc.viabedrock.protocol.data.enums.java.generated.EquipmentSlot;
 import net.raphimc.viabedrock.protocol.model.BedrockItem;
@@ -78,6 +79,9 @@ import net.raphimc.viabedrock.protocol.storage.*;
 import net.raphimc.viabedrock.protocol.types.BedrockTypes;
 
 import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 
 public class InventoryPackets {
@@ -85,6 +89,8 @@ public class InventoryPackets {
     private static final int DIALOG_BUTTON_WIDTH = 200;
     private static final int DIALOG_FAKE_BUTTON_WIDTH = 300;
     private static final String DIALOG_FAKE_BUTTON_TEXT = "This is not actually a button, but has to be one because dialogs don't support adding text only elements. Clicking it has the same effect as closing the dialog.";
+    /** Container ids already complained about, so a per-tick update does not become a per-tick log line. */
+    private static final Set<Integer> WARNED_UNKNOWN_CONTAINER_IDS = ConcurrentHashMap.newKeySet();
 
     public static void register(final BedrockProtocol protocol) {
         protocol.registerClientbound(ClientboundBedrockPackets.CONTAINER_OPEN, ClientboundPackets26_1.OPEN_SCREEN, wrapper -> {
@@ -115,19 +121,59 @@ public class InventoryPackets {
             }
 
             final Container container;
+            Integer javaMenuOverride = null;
             switch (type) {
                 case INVENTORY -> {
+                    // The answer to the announcement in InventoryTracker. The Java client already
+                    // has this screen open by itself, so nothing is forwarded — the point is that
+                    // the server now believes it too, and will accept requests against it.
+                    ViaBedrock.getPlatform().getLogger().log(Level.INFO, "The server opened the player's own inventory (container id " + containerId + ").");
                     inventoryTracker.setCurrentContainer(new InventoryContainer(wrapper.user(), containerId, position, inventoryTracker.getInventoryContainer()));
                     wrapper.cancel();
                     return;
                 }
-                case CONTAINER -> container = new ChestContainer(wrapper.user(), containerId, title, position, 27);
+                case CONTAINER -> {
+                    // A double chest is still ContainerType.CONTAINER: Bedrock says nothing about
+                    // the size here, and the paired half is only visible on the block entity. Get
+                    // it wrong and the server's 54 items do not fit the 27 slots we made, setItems
+                    // rejects the lot, and the chest renders empty.
+                    final boolean doubleChest = blockEntity != null
+                            && (blockEntity.tag().get("pairx") != null || blockEntity.tag().get("pairz") != null);
+                    final String blockTag = blockStateRewriter.tag(chunkTracker.getBlockState(position));
+                    if (CustomBlockTags.BARREL.equals(blockTag)) {
+                        container = new ChestContainer(wrapper.user(), containerId, ContainerType.CONTAINER, title, position, 27,
+                                ContainerEnumName.BarrelContainer, CustomBlockTags.BARREL);
+                    } else if (CustomBlockTags.SHULKER_BOX.equals(blockTag)) {
+                        container = new ChestContainer(wrapper.user(), containerId, ContainerType.CONTAINER, title, position, 27,
+                                ContainerEnumName.ShulkerBoxContainer, CustomBlockTags.SHULKER_BOX);
+                    } else if (doubleChest) {
+                        container = new ChestContainer(wrapper.user(), containerId, ContainerType.CONTAINER, title, position, 54,
+                                ContainerEnumName.LevelEntityContainer, CustomBlockTags.CHEST, CustomBlockTags.TRAPPED_CHEST);
+                        javaMenuOverride = BedrockProtocol.MAPPINGS.getJavaMenuId("minecraft:generic_9x6");
+                    } else {
+                        container = new ChestContainer(wrapper.user(), containerId, title, position, 27);
+                    }
+                }
+                case MINECART_CHEST, CHEST_BOAT -> container = new ChestContainer(wrapper.user(), containerId, type, title, position, 27,
+                        ContainerEnumName.LevelEntityContainer);
+                case HOPPER, MINECART_HOPPER -> container = new ChestContainer(wrapper.user(), containerId, type, title, position, 5,
+                        ContainerEnumName.LevelEntityContainer, CustomBlockTags.HOPPER);
+                case DISPENSER -> container = new ChestContainer(wrapper.user(), containerId, type, title, position, 9,
+                        ContainerEnumName.LevelEntityContainer, CustomBlockTags.DISPENSER);
+                case DROPPER -> container = new ChestContainer(wrapper.user(), containerId, type, title, position, 9,
+                        ContainerEnumName.LevelEntityContainer, CustomBlockTags.DROPPER);
+                case CRAFTER -> container = new ChestContainer(wrapper.user(), containerId, type, title, position, 9,
+                        ContainerEnumName.CrafterLevelEntityContainer, CustomBlockTags.CRAFTER);
                 case NONE, CAULDRON, JUKEBOX, ARMOR, HAND, HUD, DECORATED_POT -> { // Bedrock client can't open these containers
                     wrapper.cancel();
                     return;
                 }
                 default -> {
-                    // throw new IllegalStateException("Unhandled ContainerType: " + type);
+                    // Everything left needs more than moving items around: a crafting table, anvil,
+                    // enchanting table or brewing stand has slots whose meaning the server derives
+                    // from a recipe, and taking their result is a craft request carrying a recipe
+                    // network id. Nothing here tracks recipes, so opening the screen would show the
+                    // player a result they could never take. Refusing is the honest answer.
                     wrapper.cancel();
                     ViaBedrock.getPlatform().getLogger().log(Level.WARNING, "Tried to open unimplemented container: " + type);
                     PacketFactory.sendBedrockContainerClose(wrapper.user(), containerId, ContainerType.NONE);
@@ -137,7 +183,9 @@ public class InventoryPackets {
             inventoryTracker.setCurrentContainer(container);
 
             wrapper.write(Types.VAR_INT, (int) containerId); // container id
-            wrapper.write(Types.VAR_INT, BedrockProtocol.MAPPINGS.getBedrockToJavaContainers().get(type)); // type
+            wrapper.write(Types.VAR_INT, javaMenuOverride != null
+                    ? javaMenuOverride
+                    : BedrockProtocol.MAPPINGS.getBedrockToJavaContainers().get(type)); // type
             wrapper.write(Types.TAG, TextUtil.textComponentToNbt(title)); // title
         });
         protocol.registerClientbound(ClientboundBedrockPackets.CONTAINER_CLOSE, ClientboundPackets26_1.CONTAINER_CLOSE, new PacketHandlers() {
@@ -176,6 +224,7 @@ public class InventoryPackets {
             if (container != null && container.setItems(items)) {
                 PacketFactory.writeJavaContainerSetContent(wrapper, container);
             } else {
+                warnUnknownInventoryContainer(container, "INVENTORY_CONTENT", containerId);
                 wrapper.cancel();
             }
         });
@@ -194,12 +243,53 @@ public class InventoryPackets {
                     wrapper.setPacketType(ClientboundPackets26_1.SET_CURSOR_ITEM);
                 } else {
                     wrapper.write(Types.VAR_INT, (int) container.javaContainerId()); // container id
-                    wrapper.write(Types.VAR_INT, 0); // revision
+                    wrapper.write(Types.VAR_INT, inventoryTracker.nextRevision()); // revision
                     wrapper.write(Types.SHORT, (short) container.javaSlot(slot)); // slot
                 }
                 wrapper.write(VersionedTypes.V26_2.item, container.getJavaItem(slot)); // item
             } else {
+                warnUnknownInventoryContainer(container, "INVENTORY_SLOT", containerId);
                 wrapper.cancel();
+            }
+        });
+        protocol.registerClientbound(ClientboundBedrockPackets.ITEM_STACK_RESPONSE, null, wrapper -> {
+            wrapper.cancel();
+            final InventoryTracker inventoryTracker = wrapper.user().get(InventoryTracker.class);
+            final ItemStackRequestTracker requestTracker = wrapper.user().get(ItemStackRequestTracker.class);
+
+            final int responseCount = wrapper.read(BedrockTypes.UNSIGNED_VAR_INT); // response count
+            for (int i = 0; i < responseCount; i++) {
+                final int rawResult = wrapper.read(Types.BYTE); // result
+                final ItemStackNetResult result = ItemStackNetResult.getByValue(rawResult);
+                final int requestId = wrapper.read(BedrockTypes.VAR_INT); // request id
+                final boolean success = result == ItemStackNetResult.Success;
+
+                final List<ItemStackRequestTracker.SlotUpdate> updates = new ArrayList<>();
+                if (success) { // Only a successful response carries containers; a failed one stops here
+                    final int containerCount = wrapper.read(BedrockTypes.UNSIGNED_VAR_INT); // container count
+                    for (int c = 0; c < containerCount; c++) {
+                        final FullContainerName containerName = wrapper.read(BedrockTypes.FULL_CONTAINER_NAME); // container name
+                        final int slotCount = wrapper.read(BedrockTypes.UNSIGNED_VAR_INT); // slot count
+                        for (int s = 0; s < slotCount; s++) {
+                            final int slot = wrapper.read(Types.UNSIGNED_BYTE); // slot
+                            wrapper.read(Types.UNSIGNED_BYTE); // hotbar slot
+                            final int count = wrapper.read(Types.UNSIGNED_BYTE); // count
+                            final int stackNetworkId = wrapper.read(BedrockTypes.VAR_INT); // stack network id
+                            wrapper.read(BedrockTypes.STRING); // custom name
+                            wrapper.read(BedrockTypes.STRING); // filtered custom name
+                            wrapper.read(BedrockTypes.VAR_INT); // durability correction
+
+                            final Container.ContainerSlot resolved = inventoryTracker.resolveRequestSlot(containerName, slot);
+                            if (resolved != null) {
+                                updates.add(new ItemStackRequestTracker.SlotUpdate(resolved.container(), resolved.slot(), count, stackNetworkId));
+                            }
+                        }
+                    }
+                } else if (result == null) {
+                    ViaBedrock.getPlatform().getLogger().log(Level.WARNING, "Unknown ItemStackNetResult: " + rawResult);
+                }
+
+                requestTracker.handleResponse(requestId, result == null ? "unknown result " + rawResult : result.name(), success, updates);
             }
         });
         protocol.registerClientbound(ClientboundBedrockPackets.MODAL_FORM_REQUEST, ClientboundPackets26_1.SHOW_DIALOG, wrapper -> {
@@ -411,20 +501,30 @@ public class InventoryPackets {
                 wrapper.cancel();
                 return;
             }
-            final Container container = inventoryTracker.getContainerServerbound((byte) containerId);
+            Container container = inventoryTracker.getContainerServerbound((byte) containerId);
             if (container == null) {
-                if (containerId == ContainerID.CONTAINER_ID_INVENTORY.getValue()) {
-                    // Bedrock client can send multiple OpenInventory requests if the server doesn't respond, so this is fine here
-                    final PacketWrapper interact = PacketWrapper.create(ServerboundBedrockPackets.INTERACT, wrapper.user());
-                    interact.write(Types.UNSIGNED_BYTE, (short) InteractPacket_Action.OpenInventory.getValue()); // action
-                    interact.write(BedrockTypes.UNSIGNED_VAR_LONG, wrapper.user().get(EntityTracker.class).getClientPlayer().runtimeId()); // target entity runtime id
-                    interact.write(BedrockTypes.OPTIONAL_POSITION_3F, null); // position
-                    interact.sendToServer(BedrockProtocol.class);
-                    PacketFactory.sendJavaContainerSetContent(wrapper.user(), inventoryTracker.getInventoryContainer());
+                if (containerId != ContainerID.CONTAINER_ID_INVENTORY.getValue()) {
+                    wrapper.cancel();
+                    return;
                 }
-
-                wrapper.cancel();
-                return;
+                // A Java client opens its own inventory without telling anyone — there is no packet
+                // for it — so the first the server hears of it is this click. A Bedrock client would
+                // have announced the screen when it opened, and the server will not accept item
+                // stack requests against the inventory until it has: without this the click is
+                // refused and the item snaps back, which is why moving items inside the inventory
+                // failed while moving them into an open chest worked.
+                //
+                // The click is held rather than sent alongside, because the announcement has to
+                // arrive first. It is replayed the moment the server confirms the screen is open —
+                // or after a timeout, if this server never does. Announcing repeatedly is fine: a
+                // Bedrock client does the same when the server does not respond.
+                if (inventoryTracker.deferClickUntilInventoryOpens(revision, slot, button, action)) {
+                    wrapper.cancel();
+                    return;
+                }
+                // Still waiting on an earlier announcement. Handle it anyway rather than swallow it:
+                // a refused request is rolled back, a swallowed click is just gone.
+                container = inventoryTracker.getInventoryContainer();
             }
             if (!container.handleClick(revision, slot, button, action)) {
                 if (container.type() != ContainerType.INVENTORY) {
@@ -545,6 +645,24 @@ public class InventoryPackets {
             wrapper.write(Types.UNSIGNED_BYTE, (short) 9); // number of empty hotbar slots (vanilla client always sends 9)
             wrapper.write(Types.BOOLEAN, includeData); // include data
         });
+    }
+
+    /**
+     * Names a container update that was thrown away, the first time each container id does it.
+     *
+     * <p>These used to vanish in silence, and a lost update is not a quiet failure — it is the
+     * player's inventory disagreeing with the server until something forces a resync. If items
+     * appear late or not at all, this is the line that says which container the server was talking
+     * about and that nothing here knew what to do with it.</p>
+     */
+    private static void warnUnknownInventoryContainer(final Container container, final String packet, final int containerId) {
+        if (container != null) {
+            return; // Found, but it refused the update itself -- that is a decision, not a gap
+        }
+        if (WARNED_UNKNOWN_CONTAINER_IDS.add(containerId)) {
+            ViaBedrock.getPlatform().getLogger().log(Level.WARNING, "Dropped " + packet
+                    + " for unknown container id " + containerId + ". Items in it will not reach the client.");
+        }
     }
 
     private static void addTextToDialog(final UserConnection userConnection, final Dialog dialog, final String text) {

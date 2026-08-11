@@ -14,6 +14,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Runs ViaProxy (and with it ViaVersion, ViaBackwards, ViaRewind, ViaLegacy and ViaBedrock) inside
@@ -84,6 +86,7 @@ public final class JavaBridge {
         Path jar = resolveViaProxyJar(workDir);
         Path viaProxyConfig = workDir.resolve("viaproxy.yml");
         Files.writeString(viaProxyConfig, renderConfig(), StandardCharsets.UTF_8);
+        applyViaBedrockConfig(workDir.resolve("viabedrock.yml"), config.interactionFeatures());
 
         PrintStream originalOut = System.out;
         PrintStream originalErr = System.err;
@@ -191,6 +194,42 @@ public final class JavaBridge {
     /** Everything this addon writes — the translator jar, its config, its logs and caches — lives here. */
     private Path workDir() {
         return dataFolder;
+    }
+
+    /**
+     * Sets ViaBedrock's {@code enable-experimental-features} without touching anything else in its file.
+     *
+     * <p>ViaBedrock keeps <em>block placing, item use and block interaction</em> behind that flag, and
+     * it defaults to false. {@code BedrockProtocol.registerPackets} cancels every serverbound packet it
+     * has no handler for, and with the flag off {@code USE_ITEM_ON} has no handler — so a Java player's
+     * right-click reaches the Bedrock server as nothing at all. No container opens, no block is placed,
+     * and there is no error anywhere to say why. It has to be on for the game to be playable.</p>
+     *
+     * <p>Rewritten in place rather than regenerated, unlike {@code viaproxy.yml}. ViaBedrock owns the
+     * rest of this file — the blob cache mode, the resource pack host and port it picked — and writes
+     * its own defaults back into it, so replacing the whole file every start would undo both its
+     * bookkeeping and any operator edit. The file is flat {@code key: value} YAML, so replacing the one
+     * line is exact; if the key is absent it is appended, and if the file is absent it is created with
+     * only that key and ViaBedrock fills in the rest.</p>
+     */
+    static void applyViaBedrockConfig(Path file, boolean interactionFeatures) throws IOException {
+        String setting = "enable-experimental-features: " + interactionFeatures;
+        List<String> lines = Files.exists(file)
+                ? new ArrayList<>(Files.readAllLines(file, StandardCharsets.UTF_8))
+                : new ArrayList<>();
+
+        boolean replaced = false;
+        for (int i = 0; i < lines.size(); i++) {
+            if (lines.get(i).stripLeading().startsWith("enable-experimental-features:")) {
+                lines.set(i, setting);
+                replaced = true;
+                break;
+            }
+        }
+        if (!replaced) {
+            lines.add(setting);
+        }
+        Files.write(file, lines, StandardCharsets.UTF_8);
     }
 
     /**

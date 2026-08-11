@@ -323,33 +323,37 @@ public class ExperimentalFeatures {
             wrapper.cancel();
             BedrockInventoryTransaction inventoryTransaction = wrapper.read(inventoryTransactionRewriter.getInventoryTransactionType());
 
-            if (inventoryTransaction.legacyRequestId() != 0) {
-                // Ignore legacy inventory transactions for now
-                return;
-            }
-
-            if (inventoryTransaction.actions() != null && !inventoryTransaction.actions().isEmpty()) {
+            // This is how the server reports an inventory change it made on its own rather than in
+            // answer to a request -- picking an item up off the ground being the one that happens
+            // constantly. Ignoring a transaction because it carries a legacy request id would skip
+            // those: the id says which client transaction it answers, while the actions say what the
+            // inventory now holds, and the second is true either way. A rejection carries the state
+            // to revert to, so applying it is still the right move.
+            if (inventoryTransaction.actions() != null) {
                 for (InventoryActionData action : inventoryTransaction.actions()) {
-                    if (action.source().type() == InventorySourceType.ContainerInventory) {
-                        Container container = inventoryTracker.getContainerClientbound((byte) action.source().containerId(), null, null);
-
-                        if (container != null) {
-                            container.setItem(action.slot(), action.toItem());
-                            PacketFactory.sendJavaContainerSetContent(wrapper.user(),  container);
-                        } else {
-                            ViaBedrock.getPlatform().getLogger().log(Level.WARNING, "Received inventory action for unknown container ID: " + action.source().containerId());
-                        }
+                    if (action.source().type() != InventorySourceType.ContainerInventory) {
+                        // Nothing else names a slot this side tracks: WorldInteraction is the ground
+                        // the item came from, Creative is the creative menu, and the rest are UI.
+                        continue;
                     }
+                    final Container container = inventoryTracker.getContainerClientbound((byte) action.source().containerId(), null, null);
+                    if (container == null) {
+                        ViaBedrock.getPlatform().getLogger().log(Level.WARNING, "Received inventory action for unknown container ID: " + action.source().containerId());
+                        continue;
+                    }
+                    // Nothing is pushed to the Java client from here on purpose. setItem marks the
+                    // container dirty and InventoryTracker's tick is the one place that tells the
+                    // client, so a change made here reaches it the same way as any other.
+                    container.setItem(action.slot(), action.toItem());
                 }
             }
 
             switch (inventoryTransaction.transactionType()) {
                 case NormalTransaction -> {
-                    break; // Nothing to do here for now
+                    // The actions above are the whole of it
                 }
-                default -> {
-                    ViaBedrock.getPlatform().getLogger().log(Level.WARNING, "Received unsupported inventory transaction type: " + inventoryTransaction.transactionType());
-                }
+                default ->
+                        ViaBedrock.getPlatform().getLogger().log(Level.WARNING, "Received unsupported inventory transaction type: " + inventoryTransaction.transactionType());
             }
         });
         protocol.registerClientbound(ClientboundBedrockPackets.SET_ENTITY_LINK, ClientboundPackets26_1.SET_PASSENGERS, wrapper -> {

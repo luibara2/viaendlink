@@ -23,11 +23,13 @@ import com.viaversion.viaversion.api.minecraft.item.Item;
 import com.viaversion.viaversion.util.Pair;
 import net.raphimc.viabedrock.api.model.container.Container;
 import net.raphimc.viabedrock.protocol.BedrockProtocol;
+import net.raphimc.viabedrock.protocol.data.enums.bedrock.generated.ContainerEnumName;
 import net.raphimc.viabedrock.protocol.data.enums.bedrock.generated.ContainerID;
 import net.raphimc.viabedrock.protocol.data.enums.bedrock.generated.ContainerType;
 import net.raphimc.viabedrock.protocol.data.generated.bedrock.CustomItemTags;
 import net.raphimc.viabedrock.protocol.model.BedrockItem;
 import net.raphimc.viabedrock.protocol.model.FullContainerName;
+import net.raphimc.viabedrock.protocol.model.ItemStackRequestSlot;
 import net.raphimc.viabedrock.protocol.rewriter.ItemRewriter;
 import net.raphimc.viabedrock.protocol.storage.InventoryTracker;
 
@@ -93,6 +95,13 @@ public class BundleContainer extends Container {
         }
 
         return holdingContainer.key().javaContainerId();
+    }
+
+    /** A bundle's slots live in the dynamic container registry, keyed by the bundle's own id. */
+    @Override
+    public ItemStackRequestSlot requestSlot(final int slot) {
+        final Integer netId = this.getItem(slot).netId();
+        return new ItemStackRequestSlot(this.containerName, slot, netId == null ? 0 : netId);
     }
 
     public Item[] getJavaBundleItems() {

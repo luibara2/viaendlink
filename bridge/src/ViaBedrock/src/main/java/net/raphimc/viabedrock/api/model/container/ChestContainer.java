@@ -20,13 +20,35 @@ package net.raphimc.viabedrock.api.model.container;
 import com.viaversion.viaversion.api.connection.UserConnection;
 import com.viaversion.viaversion.api.minecraft.BlockPosition;
 import com.viaversion.viaversion.libs.mcstructs.text.TextComponent;
+import net.raphimc.viabedrock.protocol.data.enums.bedrock.generated.ContainerEnumName;
 import net.raphimc.viabedrock.protocol.data.enums.bedrock.generated.ContainerType;
 import net.raphimc.viabedrock.protocol.data.generated.bedrock.CustomBlockTags;
 
+/**
+ * Any block that simply stores items: chests, barrels, shulker boxes, hoppers, droppers, crafters.
+ *
+ * <p>They differ only in how many slots they have and which of Bedrock's slot names addresses them,
+ * so one class covers all of them. Nothing here interprets what the items <em>mean</em> — a furnace
+ * or an anvil would, which is why those are not this.</p>
+ */
 public class ChestContainer extends Container {
 
+    private final ContainerEnumName slotName;
+
     public ChestContainer(final UserConnection user, final byte containerId, final TextComponent title, final BlockPosition position, final int size) {
-        super(user, containerId, ContainerType.CONTAINER, title, position, size, CustomBlockTags.CHEST, CustomBlockTags.TRAPPED_CHEST);
+        this(user, containerId, ContainerType.CONTAINER, title, position, size, ContainerEnumName.LevelEntityContainer,
+                CustomBlockTags.CHEST, CustomBlockTags.TRAPPED_CHEST);
+    }
+
+    public ChestContainer(final UserConnection user, final byte containerId, final ContainerType type, final TextComponent title,
+                          final BlockPosition position, final int size, final ContainerEnumName slotName, final String... validBlockTags) {
+        super(user, containerId, type, title, position, size, validBlockTags);
+        this.slotName = slotName;
+    }
+
+    @Override
+    protected ContainerEnumName requestContainerName(final int slot) {
+        return this.slotName;
     }
 
 }

@@ -28,6 +28,11 @@ import java.util.Properties;
  * @param acceptServerResourcePacks accept the Bedrock server's own packs on the player's behalf
  *                        instead of prompting. Bedrock servers can require a pack a Java client
  *                        could never load, which otherwise stops the join outright
+ * @param interactionFeatures turn on ViaBedrock's {@code enable-experimental-features}, which is
+ *                        where upstream keeps block placing, item use and block interaction. Without
+ *                        it a Java player cannot right-click anything at all — no container opens,
+ *                        no block is placed — because the serverbound handlers are simply not
+ *                        registered and unregistered packets are cancelled
  */
 public record ViaEndlinkConfig(
         boolean enabled,
@@ -38,6 +43,7 @@ public record ViaEndlinkConfig(
         Path viaProxyJar,
         String resourcePackUrl,
         boolean acceptServerResourcePacks,
+        boolean interactionFeatures,
         String bridgeSecret
 ) {
     private static final int DEFAULT_PORT = 25565;
@@ -105,6 +111,7 @@ public record ViaEndlinkConfig(
                 jar.isEmpty() ? null : dataFolder.resolve(jar).toAbsolutePath().normalize(),
                 properties.getProperty("resourcePackUrl", "").trim(),
                 Boolean.parseBoolean(properties.getProperty("acceptServerResourcePacks", "true").trim()),
+                Boolean.parseBoolean(properties.getProperty("interactionFeatures", "true").trim()),
                 generateBridgeSecret()
         );
     }

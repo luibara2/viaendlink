@@ -42,6 +42,9 @@ import net.raphimc.viabedrock.protocol.data.enums.Direction;
 import net.raphimc.viabedrock.protocol.data.enums.bedrock.generated.*;
 import net.raphimc.viabedrock.protocol.data.enums.java.*;
 import net.raphimc.viabedrock.protocol.data.enums.java.generated.*;
+import net.raphimc.viabedrock.protocol.model.BedrockItem;
+import net.raphimc.viabedrock.protocol.model.ItemStackRequestAction;
+import net.raphimc.viabedrock.protocol.model.ItemStackRequestSlot;
 import net.raphimc.viabedrock.protocol.model.Position2f;
 import net.raphimc.viabedrock.protocol.model.Position3f;
 import net.raphimc.viabedrock.protocol.rewriter.GameTypeRewriter;
@@ -49,6 +52,7 @@ import net.raphimc.viabedrock.protocol.rewriter.ItemRewriter;
 import net.raphimc.viabedrock.protocol.storage.*;
 import net.raphimc.viabedrock.protocol.types.BedrockTypes;
 
+import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
@@ -348,8 +352,26 @@ public class ClientPlayerPackets {
                     PacketFactory.sendJavaBlockUpdate(wrapper.user(), position, ProtocolConstants.JAVA_AIR_ID);
                 }
                 case DROP_ALL_ITEMS, DROP_ITEM -> {
-                    // TODO: Implement DROP_ALL_ITEMS, DROP_ITEM (Currently experimental)
-                    PacketFactory.sendJavaContainerSetContent(wrapper.user(), wrapper.user().get(InventoryTracker.class).getInventoryContainer());
+                    // Dropping is an inventory mutation, so on a server-authoritative server it is
+                    // an item stack request and not the legacy inventory transaction: the held slot
+                    // loses items, and only the server may decide that it did.
+                    final InventoryContainer inventoryContainer = wrapper.user().get(InventoryTracker.class).getInventoryContainer();
+                    final byte heldSlot = inventoryContainer.getSelectedHotbarSlot();
+                    final BedrockItem heldItem = inventoryContainer.getItem(heldSlot);
+                    final ItemStackRequestSlot source = inventoryContainer.requestSlot(heldSlot);
+                    if (heldItem.isEmpty() || source == null) {
+                        PacketFactory.sendJavaContainerSetContent(wrapper.user(), inventoryContainer);
+                        break;
+                    }
+                    final int count = action == PlayerActionAction.DROP_ALL_ITEMS ? heldItem.amount() : 1;
+                    wrapper.user().get(ItemStackRequestTracker.class).send(
+                            List.of(new ItemStackRequestAction.Drop(count, source, false)),
+                            () -> {
+                                final BedrockItem remainder = heldItem.copy();
+                                remainder.setAmount(heldItem.amount() - count);
+                                inventoryContainer.setItem(heldSlot, remainder.amount() <= 0 ? BedrockItem.empty() : remainder);
+                            },
+                            inventoryContainer);
                 }
                 case RELEASE_USE_ITEM -> {
                     // TODO: Implement RELEASE_USE_ITEM
