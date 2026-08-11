@@ -56,6 +56,7 @@ Keep this list current. Everything else is upstream and should stay that way, so
 | `src/ViaBedrock/.../experimental/ExperimentalFeatures.java` | A server-sent inventory transaction is applied whether or not it carries a legacy request id, and reaches the Java client through the tracker's tick like every other change rather than pushing its own packet. |
 | `src/ViaBedrock/.../protocol/storage/InventoryTracker.java` | Announces the player's own inventory screen (`INTERACT OpenInventory`), and gives up waiting for the server to acknowledge it after a second instead of holding the click forever. |
 | `src/ViaBedrock/.../protocol/storage/ChunkTracker.java` | Names any block entity a loaded chunk carried that could not be placed, once per type. Silence here looks like an invisible chest. |
+| `src/ViaBedrock/.../api/model/container/ContainerClickTranslator.java` (`translateCreativeSlot`) | A creative Java client never sends a container click for its own inventory — its screen applies the click locally and reports the resulting slot contents. The movement is inferred from the difference and sent as the same take/place/swap as any other click. Taking a stack straight out of the creative menu still is not covered: that needs a `CraftCreative` id from `CreativeContent`, which nothing reads yet, and it is logged rather than silently dropped. |
 
 Both patches are **inert unless `endstone.bridge.secret` is set**, which only the proxy does. This
 jar still behaves exactly like upstream ViaProxy when run standalone.

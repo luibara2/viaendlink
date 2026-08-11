@@ -59,6 +59,7 @@ import net.lenni0451.mcstructs_bedrock.text.utils.BedrockTextUtils;
 import net.raphimc.viabedrock.ViaBedrock;
 import net.raphimc.viabedrock.api.chunk.BedrockBlockEntity;
 import net.raphimc.viabedrock.api.model.container.ChestContainer;
+import net.raphimc.viabedrock.api.model.container.ContainerClickTranslator;
 import net.raphimc.viabedrock.api.model.container.Container;
 import net.raphimc.viabedrock.api.model.container.player.InventoryContainer;
 import net.raphimc.viabedrock.api.model.entity.Entity;
@@ -82,6 +83,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 
 public class InventoryPackets {
@@ -91,6 +93,9 @@ public class InventoryPackets {
     private static final String DIALOG_FAKE_BUTTON_TEXT = "This is not actually a button, but has to be one because dialogs don't support adding text only elements. Clicking it has the same effect as closing the dialog.";
     /** Container ids already complained about, so a per-tick update does not become a per-tick log line. */
     private static final Set<Integer> WARNED_UNKNOWN_CONTAINER_IDS = ConcurrentHashMap.newKeySet();
+    /** Enough creative slot complaints to see the pattern, few enough not to fill the log with it. */
+    private static final int MAX_CREATIVE_SLOT_WARNINGS = 10;
+    private static final AtomicInteger CREATIVE_SLOT_WARNINGS = new AtomicInteger();
 
     public static void register(final BedrockProtocol protocol) {
         protocol.registerClientbound(ClientboundBedrockPackets.CONTAINER_OPEN, ClientboundPackets26_1.OPEN_SCREEN, wrapper -> {
@@ -533,6 +538,10 @@ public class InventoryPackets {
                 PacketFactory.sendJavaContainerSetContent(wrapper.user(), container);
             }
         });
+        // A creative Java client never sends a container click for its own inventory. Its inventory
+        // screen reports the resulting contents of each slot it changed instead, so this is the only
+        // packet that arrives -- and throwing it away, as this used to, is why moving items inside
+        // the inventory did nothing in creative while the same slots worked with a chest open.
         protocol.registerServerbound(ServerboundPackets26_1.SET_CREATIVE_MODE_SLOT, null, wrapper -> {
             wrapper.cancel();
             final short slot = wrapper.read(Types.SHORT); // slot
@@ -543,7 +552,10 @@ public class InventoryPackets {
                 wrapper.cancel();
                 return;
             }
-            PacketFactory.sendJavaContainerSetContent(wrapper.user(), inventoryTracker.getInventoryContainer());
+            if (!ContainerClickTranslator.translateCreativeSlot(wrapper.user(), slot, item)) {
+                warnUnexpressibleCreativeSlot(slot, item);
+                PacketFactory.sendJavaContainerSetContent(wrapper.user(), inventoryTracker.getInventoryContainer());
+            }
         });
         protocol.registerServerbound(ServerboundPackets26_1.CUSTOM_CLICK_ACTION, ServerboundBedrockPackets.MODAL_FORM_RESPONSE, wrapper -> {
             final String id = wrapper.read(Types.STRING); // id
@@ -645,6 +657,27 @@ public class InventoryPackets {
             wrapper.write(Types.UNSIGNED_BYTE, (short) 9); // number of empty hotbar slots (vanilla client always sends 9)
             wrapper.write(Types.BOOLEAN, includeData); // include data
         });
+    }
+
+    /**
+     * Names a creative slot change that could not be turned into a movement.
+     *
+     * <p>Almost always this is a stack pulled straight out of the creative menu, which Bedrock
+     * expresses as a {@code CraftCreative} carrying an id from the {@code CreativeContent} the
+     * server sent — and nothing here reads that packet yet, so the item has no id to name. The slot
+     * is put back the way it was, and this says which item wanted one.</p>
+     *
+     * <p>A run of these for items the player <em>does</em> already have would mean something else:
+     * that the client's slot changes are not arriving in the order this assumes.</p>
+     */
+    private static void warnUnexpressibleCreativeSlot(final short slot, final Item item) {
+        if (CREATIVE_SLOT_WARNINGS.incrementAndGet() > MAX_CREATIVE_SLOT_WARNINGS) {
+            return;
+        }
+        ViaBedrock.getPlatform().getLogger().log(Level.WARNING, "Could not express a creative inventory change as a movement: slot "
+                + slot + " was set to " + (item == null || item.amount() <= 0 ? "nothing" : item.amount() + "x item " + item.identifier())
+                + ", which is not on the cursor. Taking an item from the creative menu needs a creative item network id, which is not tracked yet."
+                + (CREATIVE_SLOT_WARNINGS.get() == MAX_CREATIVE_SLOT_WARNINGS ? " Further ones will not be logged." : ""));
     }
 
     /**

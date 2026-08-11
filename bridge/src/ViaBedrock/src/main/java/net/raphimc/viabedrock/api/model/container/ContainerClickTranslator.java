@@ -18,6 +18,7 @@
 package net.raphimc.viabedrock.api.model.container;
 
 import com.viaversion.viaversion.api.connection.UserConnection;
+import com.viaversion.viaversion.api.minecraft.item.Item;
 import net.raphimc.viabedrock.api.model.container.player.InventoryContainer;
 import net.raphimc.viabedrock.protocol.data.enums.java.generated.ContainerInput;
 import net.raphimc.viabedrock.protocol.model.BedrockItem;
@@ -82,6 +83,114 @@ public final class ContainerClickTranslator {
             // double-click gather. None has a single-request equivalent, so they resync instead.
             case CLONE, QUICK_CRAFT, PICKUP_ALL -> false;
         };
+    }
+
+    /**
+     * Expresses one {@code SetCreativeModeSlot} as the movement that produced it.
+     *
+     * <p>A creative Java client does not send container clicks for its own inventory at all. Its
+     * inventory screen is a different screen: it applies the click locally and then reports the
+     * resulting <em>contents</em> of each slot it changed. So there is no click to translate here,
+     * only a before and an after — and the movement has to be inferred from the difference.</p>
+     *
+     * <p>Which is possible because the difference is always a movement through the cursor, one slot
+     * at a time: a slot that lost items had them picked up, a slot that gained them had them put
+     * down. Bedrock keeps the cursor in a real container (slot 0 of the player UI), so saying that
+     * in item stack requests is straightforward, and it is the same take/place/swap this file
+     * already sends for every other click.</p>
+     *
+     * <p>What cannot be said this way is a stack conjured out of the creative menu, which is a
+     * {@code CraftCreative} carrying an id from the {@code CreativeContent} the server sent and
+     * nothing here tracks that yet. Those return false and are named in the log rather than passed
+     * off as working.</p>
+     *
+     * @param javaSlot the slot in the player's own window, or negative for "throw this away"
+     * @param newItem  what the client says that slot now holds
+     */
+    public static boolean translateCreativeSlot(final UserConnection user, final short javaSlot, final Item newItem) {
+        final InventoryTracker inventoryTracker = user.get(InventoryTracker.class);
+        final Container hudContainer = inventoryTracker.getHudContainer();
+        final ItemStackRequestSlot cursorSlot = hudContainer.requestSlot(HudSlots.CURSOR);
+        if (cursorSlot == null) {
+            return false;
+        }
+        final int newAmount = javaAmount(newItem);
+
+        if (javaSlot < 0) { // The creative screen's way of saying the cursor was thrown on the floor
+            final BedrockItem cursorItem = hudContainer.getItem(HudSlots.CURSOR);
+            if (cursorItem.isEmpty()) {
+                return true;
+            }
+            return dropFrom(user, hudContainer, HudSlots.CURSOR, Math.min(newAmount, cursorItem.amount()));
+        }
+
+        final Container.ContainerSlot target = inventoryTracker.getInventoryContainer().resolveJavaSlot(javaSlot);
+        if (target == null) {
+            return false;
+        }
+        final ItemStackRequestSlot targetSlot = target.container().requestSlot(target.slot());
+        if (targetSlot == null) {
+            return false;
+        }
+        final int oldAmount = target.container().getItem(target.slot()).amount();
+        final boolean sameItem = javaIdentifier(newItem) == javaIdentifier(target.container().getJavaItem(target.slot()));
+
+        if (newAmount == 0) {
+            if (oldAmount == 0) {
+                return true; // The client reporting a slot that was already empty
+            }
+            return send(user,
+                    List.of(new ItemStackRequestAction.Take(oldAmount, targetSlot, cursorSlot)),
+                    () -> move(target.container(), target.slot(), hudContainer, HudSlots.CURSOR, oldAmount),
+                    target.container(), hudContainer);
+        }
+
+        final BedrockItem cursorItem = hudContainer.getItem(HudSlots.CURSOR);
+        final boolean cursorHoldsIt = !cursorItem.isEmpty()
+                && javaIdentifier(newItem) == javaIdentifier(hudContainer.getJavaItem(HudSlots.CURSOR));
+
+        if (oldAmount > 0 && sameItem) {
+            final int difference = newAmount - oldAmount;
+            if (difference == 0) {
+                return true;
+            }
+            if (difference < 0) {
+                return send(user,
+                        List.of(new ItemStackRequestAction.Take(-difference, targetSlot, cursorSlot)),
+                        () -> move(target.container(), target.slot(), hudContainer, HudSlots.CURSOR, -difference),
+                        target.container(), hudContainer);
+            }
+            if (!cursorHoldsIt || cursorItem.amount() < difference) {
+                return false; // The extra items came from the creative menu, not from the cursor
+            }
+            return send(user,
+                    List.of(new ItemStackRequestAction.Place(difference, cursorSlot, targetSlot)),
+                    () -> move(hudContainer, HudSlots.CURSOR, target.container(), target.slot(), difference),
+                    target.container(), hudContainer);
+        }
+
+        if (!cursorHoldsIt || cursorItem.amount() < newAmount) {
+            return false; // Conjured from the creative menu: needs a creative item network id
+        }
+        if (oldAmount > 0) { // Something else was there, so the two exchange places
+            return send(user,
+                    List.of(new ItemStackRequestAction.Swap(cursorSlot, targetSlot)),
+                    () -> swapItems(hudContainer, HudSlots.CURSOR, target.container(), target.slot()),
+                    target.container(), hudContainer);
+        }
+        return send(user,
+                List.of(new ItemStackRequestAction.Place(newAmount, cursorSlot, targetSlot)),
+                () -> move(hudContainer, HudSlots.CURSOR, target.container(), target.slot(), newAmount),
+                target.container(), hudContainer);
+    }
+
+    /** Java items are compared by identity only; the count is carried separately and changes on its own. */
+    private static int javaIdentifier(final Item item) {
+        return item == null || item.amount() <= 0 ? -1 : item.identifier();
+    }
+
+    private static int javaAmount(final Item item) {
+        return item == null || item.amount() <= 0 ? 0 : item.amount();
     }
 
     /** Left or right click: move between the clicked slot and the cursor. */

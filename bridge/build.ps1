@@ -96,7 +96,11 @@ $expectations = @(
     @{ Class   = "net/raphimc/viabedrock/protocol/storage/ChunkTracker.class"
        Present = "reportUnrecognisedBlockEntities"
        Absent  = $null
-       What    = "a chunk's block entities that could not be placed are named rather than dropped in silence" }
+       What    = "a chunk's block entities that could not be placed are named rather than dropped in silence" },
+    @{ Class   = "net/raphimc/viabedrock/api/model/container/ContainerClickTranslator.class"
+       Present = "translateCreativeSlot"
+       Absent  = $null
+       What    = "a creative client's own inventory works, which sends slot contents and never a click" }
 )
 
 function Invoke-Gradle([string] $directory, [string[]] $gradleArgs) {
