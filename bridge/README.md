@@ -54,9 +54,16 @@ Keep this list current. Everything else is upstream and should stay that way, so
 | `src/ViaBedrock/.../protocol/data/BedrockMappingData.java` | `getJavaMenuId(identifier)`, so the double chest can reach `generic_9x6` — one Bedrock container type covers both chest sizes. |
 | `src/ViaBedrock/.../experimental/types/inventory/InventoryTransactionPacketType.java` | Reads the presence boolean that precedes the action list, which upstream omits. Without it the boolean is taken as the list length and every field after it is read one byte early, so a server-sent slot change — an item picked up off the ground — parses as a source nothing handles and is dropped in silence. The write side now announces the legacy slot list only for the request ids the reader looks for it under. |
 | `src/ViaBedrock/.../experimental/ExperimentalFeatures.java` | A server-sent inventory transaction is applied whether or not it carries a legacy request id, and reaches the Java client through the tracker's tick like every other change rather than pushing its own packet. |
-| `src/ViaBedrock/.../protocol/storage/InventoryTracker.java` | Announces the player's own inventory screen (`INTERACT OpenInventory`), and gives up waiting for the server to acknowledge it after a second instead of holding the click forever. |
-| `src/ViaBedrock/.../protocol/storage/ChunkTracker.java` | Names any block entity a loaded chunk carried that could not be placed, once per type. Silence here looks like an invisible chest. |
+| `src/ViaBedrock/.../protocol/storage/InventoryTracker.java` | Announces the player's own inventory screen (`INTERACT OpenInventory`), and gives up waiting for the server to acknowledge it after a second instead of holding the action forever. Also collects a tick of creative slot changes and applies the ones giving items up first: one shift-click changes two slots, they are reported separately and often destination-first, and in that order the move cannot be expressed at all. |
+| `src/ViaBedrock/.../protocol/storage/ChunkTracker.java` | Names any block entity a loaded chunk carried that could not be placed, once per type — silence there looks like an invisible chest. Also re-derives a block-entity-influenced block state on *every* block update rather than only on ones that changed the Bedrock state: BDS re-sends both halves of a chest their existing state when the container opens, and answering that with the plain mapping split the double chest into two singles under the player while its 54-slot screen stayed open. |
+| `src/ViaBedrock/.../protocol/rewriter/blockentity/ChestBlockEntityRewriter.java` | **New file.** Java renders a double chest from the block state's `type=left/right`; Bedrock keeps the pairing on the block entity instead, so a translated double chest arrived as two `single` chests side by side even though opening one showed all 54 slots. Turns the `pairx`/`pairz` pointer into the property Java draws from. |
 | `src/ViaBedrock/.../api/model/container/ContainerClickTranslator.java` (`translateCreativeSlot`) | A creative Java client never sends a container click for its own inventory — its screen applies the click locally and reports the resulting slot contents. The movement is inferred from the difference and sent as the same take/place/swap as any other click. Taking a stack straight out of the creative menu still is not covered: that needs a `CraftCreative` id from `CreativeContent`, which nothing reads yet, and it is logged rather than silently dropped. |
+| `src/ViaBedrock/.../api/util/CraftingDataReader.java` | **New file.** Reads `CraftingData` — the recipe list Bedrock's client, not its server, uses to decide what a grid makes. Every entry kind has to be parsed even though only the crafting-table ones are kept: the list is a flat sequence with no per-entry length, so a skipped entry corrupts every entry after it. |
+| `src/ViaBedrock/.../protocol/model/CraftingRecipe.java`, `.../model/RecipeIngredient.java` | **New files.** A recipe and the descriptors it matches on — one item, an item tag ("any plank"), or nothing this side can evaluate. Shaped matching tries every offset and the mirror; shapeless backtracks, because ingredient families overlap and a greedy pairing silently fails to match recipes that do apply. |
+| `src/ViaBedrock/.../protocol/storage/RecipeStorage.java` | **New file.** Holds the crafting-table recipes and matches a grid against them, lowest `priority` first — which is what decides between the 2x2 and 3x3 planks recipes when both fit. |
+| `src/ViaBedrock/.../api/model/container/CraftingContainer.java` | **New file.** A crafting table laid out as a Java window (result at 0, grid at 1-9) over the player UI container's slots 32-40 and 50, where Bedrock actually keeps them. See "Crafting" below. |
+| `src/ViaBedrock/.../api/model/container/player/HudContainer.java` | Recognises the 3x3 grid and the created-output slot alongside the 2x2 square, and recomputes the result whenever either grid changes. |
+| `src/ViaBedrock/.../protocol/types/item/BedrockItemType.java` | Takes a flag for whether the stack network id field is on the wire at all. A recipe result and a craft's predicted result are `ItemInstance`s, which do not carry one; reading them as the ordinary `Item` shape shifts every byte after the count. |
 
 Both patches are **inert unless `endstone.bridge.secret` is set**, which only the proxy does. This
 jar still behaves exactly like upstream ViaProxy when run standalone.
@@ -128,12 +135,69 @@ item up left the inventory looking unchanged until something unrelated forced a 
 dropping one worked, because only some paths remembered to send. Converging on the tracked state
 each tick makes that class of bug impossible and coalesces bursts of slot updates into one send.
 
-**Not implemented.** Crafting tables, anvils, enchanting tables, brewing stands, grindstones and
-looms are still refused at `CONTAINER_OPEN`. Their result slot is not a move but a craft, carrying
-the recipe network id the client matched, and nothing here parses `CRAFTING_DATA` — so opening them
-would show a result the player could never take. Creative middle-click, the click-drag and the
-double-click gather resync instead of translating, for the same reason: no single request expresses
-them.
+**Not implemented.** Anvils, enchanting tables, brewing stands, grindstones and looms are still
+refused at `CONTAINER_OPEN`. Their result slot carries a cost, a level or a pattern id this side does
+not track, so opening them would show a result the player could never take. Creative middle-click,
+the click-drag and the double-click gather resync instead of translating, for the same reason: no
+single request expresses them.
+
+### Crafting: the result slot is ours, not the server's
+
+This is the one screen where the two editions disagree about *who computes what the player sees*.
+On Java the server decides what a grid produces and pushes it into slot 0. On Bedrock it never
+does — the client matches the grid against the `CraftingData` recipe list itself, and the server
+only ever hears about a craft that has already been decided. A bridge sits on the Java side of that
+line, so it has to perform the Bedrock client's half: hold the recipes, match the grid, and fill in
+the result as if a server had sent it. Without that the window opens and the result slot is empty
+for every recipe, which is why crafting tables used to be refused outright rather than shown.
+
+Three things had to be true before a Java player could craft:
+
+1. **The recipe list has to arrive.** It did not. See "The recipe list is lost on the version hop"
+   below — this is in the proxy, not here.
+2. **The grid is not where the window is.** Bedrock keeps both crafting grids in the *player UI*
+   container: the 2x2 square at slots 28-31, a table's 3x3 at 32-40, and whatever the open grid
+   makes at slot 50. `CraftingContainer` is a view onto those, not a copy of them, so there stays
+   exactly one answer to "what is in the grid".
+3. **Taking the result is not a move.** It is `CraftRecipe` (the recipe's network id, from the list
+   in 1) → `CraftResults` (what it should make; the server checks its own answer against this) →
+   one `Consume` per ingredient → a `Take` or `Place` out of `CreatedOutputContainer` slot 50.
+   Sending only the last of those — which is what the click most resembles — is refused, because as
+   far as the server is concerned nothing was crafted and that slot is empty.
+4. **A stack that does not exist yet is named by the request that will create it.** The
+   created-output source's *stack network id* is the request's own id, which is negative. This is
+   the one that is impossible to guess: a plausible 0 is answered `FailedToValidateSrcSlot`, which
+   reads like the slot is wrong rather than the id, and everything else about the request is
+   correct. See `ItemStackRequestSlot.PRODUCED_BY_THIS_REQUEST`.
+
+The last two were settled by capturing a vanilla Bedrock client crafting through the proxy —
+`ClientRelayPacketHandler.logItemStackRequest` prints the request that a real client embeds in
+`PlayerAuthInput`, where the trace previously showed only an action count. That capture is
+transcribed verbatim into `ItemStackRequestWireFormatTest.aCraftRequestDecodesAsWritten`, which is
+the reference for a shape nothing else documents.
+
+The same convention appears *between* requests: a client that acts again before the response arrives
+quotes the earlier request's id for the stack that request produced. Nothing here does that yet — a
+Java player clicking twice inside one round trip quotes the pre-move id and is refused — which is
+survivable because a rejection rolls back and the response is ~30 ms away, but it is the same rule.
+
+Shift-clicking the result crafts as many times as the grid allows, in one request, and does not
+attempt the craft at all if the inventory cannot hold the whole batch: a partial craft-all would
+spend ingredients on items that were then dropped. A recipe whose ingredients this side cannot
+evaluate — a Molang predicate, an unknown item — never matches, so the player is not offered a craft
+the server would refuse.
+
+### The recipe list is lost on the version hop
+
+1.26.40 split `CraftingDataPacket` from one `craftingData` list into eight per-kind ones
+(`shapedData`, `shapelessData`, `multiData`, …). The proxy crosses version gaps by re-encoding
+through a shared packet model, which absorbs almost every difference — but here the two serializers
+read and write *different fields of the same object*. The re-encode succeeds, emits a well-formed
+packet, and that packet contains zero recipes. Nothing fails and nothing warns.
+
+`LegacyClientTo2168Translator` folds the lists back into one. It lives in the proxy addon rather
+than here, and `CraftingDataDowngradeTest` pins both the fold and the fact that a re-encode without
+it loses everything.
 
 ### What the extra claims are for
 

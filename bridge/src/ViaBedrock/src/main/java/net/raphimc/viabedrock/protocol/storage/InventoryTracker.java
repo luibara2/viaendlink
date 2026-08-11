@@ -26,6 +26,7 @@ import com.viaversion.viaversion.libs.fastutil.ints.IntObjectPair;
 import net.lenni0451.mcstructs_bedrock.forms.Form;
 import net.raphimc.viabedrock.ViaBedrock;
 import net.raphimc.viabedrock.api.model.container.Container;
+import net.raphimc.viabedrock.api.model.container.CraftingContainer;
 import net.raphimc.viabedrock.api.model.container.dynamic.BundleContainer;
 import net.raphimc.viabedrock.api.model.container.player.ArmorContainer;
 import net.raphimc.viabedrock.api.model.container.player.HudContainer;
@@ -47,7 +48,9 @@ import net.raphimc.viabedrock.protocol.rewriter.BlockStateRewriter;
 import net.raphimc.viabedrock.protocol.rewriter.ItemRewriter;
 import net.raphimc.viabedrock.protocol.types.BedrockTypes;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.function.BooleanSupplier;
 import java.util.logging.Level;
@@ -68,11 +71,15 @@ public class InventoryTracker extends StoredObject {
     private static final int INVENTORY_OPEN_TIMEOUT_TICKS = 20;
 
     private Container currentContainer = null;
+    private final List<PendingCreativeUpdate> pendingCreativeUpdates = new ArrayList<>();
+
     private BooleanSupplier deferredAction = null;
+    private int creativeFlushWaitTicks;
     private boolean awaitingInventoryOpen;
     private int awaitingInventoryOpenTicks;
     private boolean inventoryScreenAnnounced;
     private boolean inventoryOpenUnanswered;
+    private boolean refreshingCraftingResult;
     private int revision;
     private Container pendingCloseContainer = null;
     private IntObjectPair<Form> currentForm = null;
@@ -140,7 +147,10 @@ public class InventoryTracker extends StoredObject {
             case ArmorContainer -> new Container.ContainerSlot(this.armorContainer, slot);
             case OffhandContainer -> new Container.ContainerSlot(this.offhandContainer, 0);
             case CursorContainer -> new Container.ContainerSlot(this.hudContainer, 0);
-            case CraftingInputContainer -> new Container.ContainerSlot(this.hudContainer, slot);
+            // Both crafting grids and the slot a finished craft lands in are regions of the player
+            // UI container, and the response names them by that container's own slot numbers.
+            case CraftingInputContainer, CreatedOutputContainer, CraftingOutputPreviewContainer ->
+                    slot >= 0 && slot < this.hudContainer.size() ? new Container.ContainerSlot(this.hudContainer, slot) : null;
             case DynamicContainer -> {
                 final BundleContainer bundle = this.dynamicContainerRegistry.get(containerName);
                 yield bundle == null ? null : new Container.ContainerSlot(bundle, slot);
@@ -155,6 +165,57 @@ public class InventoryTracker extends StoredObject {
 
     public void removeDynamicContainer(final FullContainerName containerName) {
         this.dynamicContainerRegistry.remove(containerName);
+    }
+
+    /**
+     * Recomputes what the open crafting grid produces and puts it in the result slot.
+     *
+     * <p>Java's server owns the crafting preview and pushes it into slot 0 of the window; Bedrock's
+     * does not send one at all, because a Bedrock client matches the recipe list itself and only
+     * ever tells the server about a finished craft. So this is the server half of the Java contract
+     * being performed locally, and without it the result slot stays empty however the grid is
+     * filled.</p>
+     *
+     * <p>Which grid depends on the screen: a crafting table's 3x3 while one is open, the player's
+     * own 2x2 otherwise. Both live in the player UI container, so both are read from there.</p>
+     */
+    public void refreshCraftingResult() {
+        if (this.refreshingCraftingResult) {
+            return; // Writing the result is itself a slot change; do not chase our own tail
+        }
+        this.refreshingCraftingResult = true;
+        try {
+            final RecipeStorage recipes = this.user().get(RecipeStorage.class);
+            final BedrockItem[] grid;
+            final int gridWidth;
+            if (this.currentContainer instanceof CraftingContainer craftingContainer) {
+                grid = craftingContainer.grid();
+                gridWidth = craftingContainer.gridWidth();
+            } else {
+                grid = new BedrockItem[4];
+                for (int i = 0; i < grid.length; i++) {
+                    grid[i] = this.hudContainer.getItem(HudContainer.SMALL_GRID_FIRST + i);
+                }
+                gridWidth = 2;
+            }
+
+            final RecipeStorage.Match match = recipes == null ? null : recipes.match(grid, gridWidth);
+            this.hudContainer.setItem(CraftingContainer.RESULT, match == null ? BedrockItem.empty() : match.recipe().result().copy());
+        } finally {
+            this.refreshingCraftingResult = false;
+        }
+    }
+
+    /**
+     * The open crafting table's window has to be re-sent, because a slot it shows has changed.
+     *
+     * <p>Its items live in the player UI container rather than in the window itself, so the dirty
+     * flag lands on the wrong container by default and the tick's sync would skip it.</p>
+     */
+    public void markCraftingWindowDirty() {
+        if (this.currentContainer instanceof CraftingContainer craftingContainer) {
+            craftingContainer.markDirty();
+        }
     }
 
     public void markPendingClose(final Container container) {
@@ -173,6 +234,9 @@ public class InventoryTracker extends StoredObject {
         }
         this.currentContainer = null;
         this.pendingCloseContainer = null;
+        // The grid in view has changed -- from a table's 3x3 back to the player's own 2x2 -- so what
+        // it produces has too.
+        this.refreshCraftingResult();
     }
 
     public void closeCurrentForm() {
@@ -188,8 +252,69 @@ public class InventoryTracker extends StoredObject {
         this.currentForm = null;
     }
 
+    /**
+     * Holds a creative slot change until the whole click that produced it has arrived.
+     *
+     * <p>One shift-click in the creative inventory changes two slots, and the screen reports each
+     * one on its own — in the order its own transfer logic happened to touch them, which puts the
+     * destination first as often as not. Read in that order the move is impossible to express: the
+     * items appear in the destination before anything has picked them up, so there is nothing on
+     * the cursor to put down.</p>
+     *
+     * <p>Collecting a tick's worth and applying the slots that <em>lost</em> items first restores
+     * the order the movement actually happened in, whichever order it was reported in.</p>
+     *
+     * @param loss whether this slot is losing items, which is what has to happen first
+     */
+    public void queueCreativeSlotUpdate(final boolean loss, final BooleanSupplier apply) {
+        this.pendingCreativeUpdates.add(new PendingCreativeUpdate(loss, apply));
+    }
+
+    private void flushCreativeSlotUpdates() {
+        if (this.pendingCreativeUpdates.isEmpty()) {
+            return;
+        }
+
+        // Same rule as a click: the server refuses requests against a screen it does not believe is
+        // open. Waiting here rather than per update keeps a whole click together.
+        if (!this.isContainerOpen() && !this.inventoryOpenUnanswered) {
+            if (this.creativeFlushWaitTicks == 0) {
+                this.announceInventoryScreen();
+            }
+            if (++this.creativeFlushWaitTicks < INVENTORY_OPEN_TIMEOUT_TICKS) {
+                return;
+            }
+            this.inventoryOpenUnanswered = true;
+            ViaBedrock.getPlatform().getLogger().log(Level.WARNING, "The server did not answer the inventory screen announcement within "
+                    + INVENTORY_OPEN_TIMEOUT_TICKS + " ticks. Acting on the creative inventory directly from now on; if the server "
+                    + "refuses that, the rejection is logged with its reason.");
+        }
+        this.creativeFlushWaitTicks = 0;
+
+        final List<PendingCreativeUpdate> updates = new ArrayList<>(this.pendingCreativeUpdates);
+        this.pendingCreativeUpdates.clear();
+        boolean resync = false;
+        for (PendingCreativeUpdate update : updates) {
+            if (update.loss()) {
+                resync |= !update.apply().getAsBoolean();
+            }
+        }
+        for (PendingCreativeUpdate update : updates) {
+            if (!update.loss()) {
+                resync |= !update.apply().getAsBoolean();
+            }
+        }
+        if (resync) {
+            PacketFactory.sendJavaContainerSetContent(this.user(), this.inventoryContainer);
+        }
+    }
+
+    private record PendingCreativeUpdate(boolean loss, BooleanSupplier apply) {
+    }
+
     public void tick() {
         this.expireInventoryOpenWait();
+        this.flushCreativeSlotUpdates();
         this.synchroniseDirtyContainers();
 
         if (this.currentContainer != null && this.currentContainer.position() != null) {
@@ -288,6 +413,7 @@ public class InventoryTracker extends StoredObject {
             throw new IllegalStateException("There is already another container open");
         }
         this.currentContainer = container;
+        this.refreshCraftingResult();
         this.replayDeferredAction();
     }
 

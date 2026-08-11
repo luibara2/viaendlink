@@ -21,19 +21,21 @@ servers. By analogy — if Endlink is Velocity, ViaEndlink is Geyser.
 > ### Status: beta, and genuinely so
 >
 > This is the least finished part of the project, and the honest summary is that a Java player can
-> get in and move around, not that the experience is good. **You cannot open a chest.** Read the
-> whole of this box before installing it anywhere you care about.
+> get in, move around and use their inventory, not that the experience is good. Read the whole of
+> this box before installing it anywhere you care about.
 >
 > **Working**, tested against a Minecraft 1.26.40 backend: joining, chat, the player list, terrain
 > loading, backend switching, Mojang account verification, and the player's real IP reaching the
 > backend. Also: moving, dropping and swapping items, and storage containers — chests (single and
-> double), barrels, shulker boxes, hoppers, droppers, dispensers and crafters.
+> double), barrels, shulker boxes, hoppers, droppers, dispensers and crafters. **Crafting** works in
+> both the player's own 2x2 square and a crafting table. Shift-clicking the result to craft a whole
+> stack at once is implemented but has not been confirmed against a live server.
 >
-> **Not working yet**: crafting tables, anvils, enchanting tables and brewing stands do not open,
-> because taking their result is a craft carrying a recipe id and nothing here reads the recipe list
-> yet; movement rubber-bands, because a Java client predicts motion and a Bedrock server does not
-> agree; custom addon items, blocks and entities have no Java equivalent and render as unknown;
-> block entities loaded from chunks are unreliable.
+> **Not working yet**: anvils, enchanting tables and brewing stands do not open, because taking
+> their result costs a level or a repair fee this side does not track; movement rubber-bands,
+> because a Java client predicts motion and a Bedrock server does not agree; custom addon items,
+> blocks and entities have no Java equivalent and render as unknown; block entities loaded from
+> chunks are unreliable.
 >
 > ViaBedrock, which does the actual translation, is upstream-described as early in development. Much
 > of the above is inherited from that rather than added here.
@@ -102,10 +104,14 @@ runs both steps on every push, so it is a working reference if these instruction
   1.26.30 Bedrock clients onto 1.26.40 backends.
 - ViaBedrock is upstream-described as early in development. Block entities and movement are
   imperfect.
-- Containers that *craft* — crafting table, anvil, enchanting table, brewing stand, grindstone,
-  loom — are refused rather than opened. Taking their result is not a move but a craft request
-  naming the recipe, and the recipe list the server sends is not parsed yet, so the screen would
-  show a result the player could never take. Storage containers work.
+- Anvils, enchanting tables, brewing stands, grindstones and looms are refused rather than opened.
+  Taking their result is not a move: it carries a repair cost, an enchantment level or a pattern id
+  that this side does not track, so the screen would show a result the player could never take.
+  Storage containers and crafting tables work.
+- The crafting result slot is computed here, not sent by the server — Bedrock has no crafting
+  preview packet, so this side matches the server's recipe list itself. A recipe whose ingredients
+  it cannot evaluate (a Molang predicate, an item the session's registry does not know) never
+  matches, so it is not offered rather than offered and refused.
 - Creative middle-click, click-dragging a stack across slots, and double-clicking to gather are not
   translated: no single Bedrock request expresses them, so the click is refused and the window is
   resynced.

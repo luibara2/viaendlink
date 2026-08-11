@@ -40,11 +40,16 @@ public sealed interface ItemStackRequestAction {
 
     ItemStackRequestActionType type();
 
-    void writeData(PacketWrapper wrapper);
+    void writeData(PacketWrapper wrapper, int requestId);
 
-    default void write(final PacketWrapper wrapper) {
+    /**
+     * @param requestId the id this request is being sent under. Threaded through because a slot
+     *                  naming a stack the request has yet to create refers to it by that id — see
+     *                  {@link ItemStackRequestSlot#PRODUCED_BY_THIS_REQUEST}.
+     */
+    default void write(final PacketWrapper wrapper, final int requestId) {
         wrapper.write(Types.BYTE, (byte) this.type().getValue()); // action type
-        this.writeData(wrapper);
+        this.writeData(wrapper, requestId);
     }
 
     /** Moves {@code count} items onto an empty-or-matching destination, leaving the rest behind. */
@@ -55,10 +60,10 @@ public sealed interface ItemStackRequestAction {
         }
 
         @Override
-        public void writeData(final PacketWrapper wrapper) {
+        public void writeData(final PacketWrapper wrapper, final int requestId) {
             wrapper.write(Types.BYTE, (byte) this.count); // count
-            this.source.write(wrapper);
-            this.destination.write(wrapper);
+            this.source.write(wrapper, requestId);
+            this.destination.write(wrapper, requestId);
         }
     }
 
@@ -75,10 +80,10 @@ public sealed interface ItemStackRequestAction {
         }
 
         @Override
-        public void writeData(final PacketWrapper wrapper) {
+        public void writeData(final PacketWrapper wrapper, final int requestId) {
             wrapper.write(Types.BYTE, (byte) this.count); // count
-            this.source.write(wrapper);
-            this.destination.write(wrapper);
+            this.source.write(wrapper, requestId);
+            this.destination.write(wrapper, requestId);
         }
     }
 
@@ -90,9 +95,9 @@ public sealed interface ItemStackRequestAction {
         }
 
         @Override
-        public void writeData(final PacketWrapper wrapper) {
-            this.source.write(wrapper);
-            this.destination.write(wrapper);
+        public void writeData(final PacketWrapper wrapper, final int requestId) {
+            this.source.write(wrapper, requestId);
+            this.destination.write(wrapper, requestId);
         }
     }
 
@@ -104,10 +109,30 @@ public sealed interface ItemStackRequestAction {
         }
 
         @Override
-        public void writeData(final PacketWrapper wrapper) {
+        public void writeData(final PacketWrapper wrapper, final int requestId) {
             wrapper.write(Types.BYTE, (byte) this.count); // count
-            this.source.write(wrapper);
+            this.source.write(wrapper, requestId);
             wrapper.write(Types.BOOLEAN, this.randomly); // randomly
+        }
+    }
+
+    /**
+     * Uses items up as part of something else — the ingredients a craft takes out of the grid.
+     *
+     * <p>The same wire shape as {@link Destroy}, and a different meaning: the server expects one of
+     * these per ingredient after a {@link CraftRecipe} and validates them against the recipe it was
+     * given. A craft that omits them is not a craft that consumes nothing; it is a malformed one.</p>
+     */
+    record Consume(int count, ItemStackRequestSlot source) implements ItemStackRequestAction {
+        @Override
+        public ItemStackRequestActionType type() {
+            return ItemStackRequestActionType.Consume;
+        }
+
+        @Override
+        public void writeData(final PacketWrapper wrapper, final int requestId) {
+            wrapper.write(Types.BYTE, (byte) this.count); // count
+            this.source.write(wrapper, requestId);
         }
     }
 
@@ -119,9 +144,9 @@ public sealed interface ItemStackRequestAction {
         }
 
         @Override
-        public void writeData(final PacketWrapper wrapper) {
+        public void writeData(final PacketWrapper wrapper, final int requestId) {
             wrapper.write(Types.BYTE, (byte) this.count); // count
-            this.source.write(wrapper);
+            this.source.write(wrapper, requestId);
         }
     }
 
@@ -136,7 +161,7 @@ public sealed interface ItemStackRequestAction {
         }
 
         @Override
-        public void writeData(final PacketWrapper wrapper) {
+        public void writeData(final PacketWrapper wrapper, final int requestId) {
             wrapper.write(BedrockTypes.UNSIGNED_VAR_INT, this.creativeItemNetworkId); // creative item network id
             wrapper.write(Types.BYTE, (byte) this.numberOfRequestedCrafts); // number of requested crafts
         }
@@ -153,7 +178,7 @@ public sealed interface ItemStackRequestAction {
         }
 
         @Override
-        public void writeData(final PacketWrapper wrapper) {
+        public void writeData(final PacketWrapper wrapper, final int requestId) {
             wrapper.write(BedrockTypes.UNSIGNED_VAR_INT, this.recipeNetworkId); // recipe network id
             wrapper.write(Types.BYTE, (byte) this.numberOfRequestedCrafts); // number of requested crafts
         }
@@ -162,6 +187,11 @@ public sealed interface ItemStackRequestAction {
     /**
      * The client's prediction of what a craft produces. Named "deprecated" in the protocol for
      * years and still required: the server checks its own recipe result against this one.
+     *
+     * <p>The results are {@code ItemInstance}s, not the {@code Item} shape the rest of this file's
+     * slots carry — no stack network id field at all, since a stack that does not exist yet cannot
+     * have one. Writing the wrong one of the two shifts every byte after it, and the server sees a
+     * request that decodes into something else entirely.</p>
      */
     record CraftResults(BedrockItem[] resultItems, int timesCrafted) implements ItemStackRequestAction {
         @Override
@@ -170,8 +200,8 @@ public sealed interface ItemStackRequestAction {
         }
 
         @Override
-        public void writeData(final PacketWrapper wrapper) {
-            final Type<BedrockItem> itemType = wrapper.user().get(ItemRewriter.class).newItemType();
+        public void writeData(final PacketWrapper wrapper, final int requestId) {
+            final Type<BedrockItem> itemType = wrapper.user().get(ItemRewriter.class).itemInstanceType();
             wrapper.write(BedrockTypes.UNSIGNED_VAR_INT, this.resultItems.length); // result count
             for (BedrockItem resultItem : this.resultItems) {
                 wrapper.write(itemType, resultItem); // result item

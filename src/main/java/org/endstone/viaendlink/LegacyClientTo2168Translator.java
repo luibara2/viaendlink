@@ -3,11 +3,20 @@ package org.endstone.viaendlink;
 import io.netty.buffer.Unpooled;
 import org.cloudburstmc.protocol.bedrock.data.HeightMapDataType;
 import org.cloudburstmc.protocol.bedrock.data.SubChunkData;
+import org.cloudburstmc.protocol.bedrock.data.inventory.crafting.recipe.CraftingRecipeData;
+import org.cloudburstmc.protocol.bedrock.data.inventory.crafting.recipe.RecipeData;
+import org.cloudburstmc.protocol.bedrock.data.inventory.crafting.recipe.SmithingTransformRecipeData;
+import org.cloudburstmc.protocol.bedrock.data.inventory.crafting.recipe.SmithingTrimRecipeData;
+import org.cloudburstmc.protocol.bedrock.data.inventory.descriptor.DefaultDescriptor;
+import org.cloudburstmc.protocol.bedrock.data.inventory.descriptor.ItemDescriptorWithCount;
 import org.endstone.proxy.protocol.PacketTranslator;
 import org.endstone.proxy.protocol.TranslationContext;
 import org.cloudburstmc.protocol.bedrock.packet.AvailableCommandsPacket;
 import org.cloudburstmc.protocol.bedrock.packet.BedrockPacket;
+import org.cloudburstmc.protocol.bedrock.packet.CraftingDataPacket;
 import org.cloudburstmc.protocol.bedrock.packet.SubChunkPacket;
+
+import java.util.List;
 
 /**
  * Adjacent-version translator for the 1.26.30 (protocol 1001) &rarr; 1.26.40 (protocol 2168) step
@@ -54,7 +63,78 @@ public final class LegacyClientTo2168Translator implements PacketTranslator {
         if (packet instanceof SubChunkPacket subChunk) {
             normalizeSubChunkForLegacyClient(subChunk);
         }
+        if (packet instanceof CraftingDataPacket craftingData) {
+            flattenCraftingDataForLegacyClient(craftingData);
+        }
         return packet;
+    }
+
+    /**
+     * Folds 1.26.40's eight per-kind recipe lists back into the single list 1.26.30 reads.
+     *
+     * <p>This is the second shape of the same trap {@link #normalizeSubChunkForLegacyClient} covers,
+     * and it is quieter still. 1.26.40 split {@code CraftingDataPacket} from one {@code craftingData}
+     * list into {@code shapedData}, {@code shapelessData}, {@code multiData} and five more; the two
+     * serializers therefore read and write <em>different fields of the same packet object</em>. A
+     * re-encode across the hop does not fail and does not warn — the 1.26.30 serializer writes
+     * {@code craftingData}, which the 1.26.40 deserializer never touched, so it writes a
+     * well-formed packet containing zero recipes.</p>
+     *
+     * <p>Which is why the Java client had no recipes at all rather than some. Each entry already
+     * carries its own {@code CraftingDataType}, so putting them back in one list is all that the
+     * older layout needs.</p>
+     *
+     * <p>Recipes whose ingredients cannot survive the older encoding are dropped rather than
+     * mangled. 1.26.40 names a {@code DEFAULT} ingredient by <em>identifier</em> and 1.26.30 by
+     * runtime id, so one that this session's item registry cannot resolve would be written as
+     * runtime id 0 — indistinguishable, to the client, from "this slot must be empty", turning the
+     * recipe into a different one that matches an emptier grid. Losing the recipe is recoverable;
+     * shipping a wrong one is not.</p>
+     */
+    private static void flattenCraftingDataForLegacyClient(CraftingDataPacket packet) {
+        if (!packet.getCraftingData().isEmpty()) {
+            return; // Already the flat shape: a backend older than the split, or an already-folded packet
+        }
+        final List<RecipeData> flat = packet.getCraftingData();
+        addEncodable(flat, packet.getShapedData());
+        addEncodable(flat, packet.getShapelessData());
+        addEncodable(flat, packet.getMultiData());
+        addEncodable(flat, packet.getShapelessUserData());
+        addEncodable(flat, packet.getShapelessChemistryData());
+        addEncodable(flat, packet.getShapedChemistryData());
+        addEncodable(flat, packet.getSmithingTransformData());
+        addEncodable(flat, packet.getSmithingTrimData());
+    }
+
+    private static void addEncodable(List<RecipeData> flat, List<? extends RecipeData> recipes) {
+        for (RecipeData recipe : recipes) {
+            if (isEncodableForLegacyClient(recipe)) {
+                flat.add(recipe);
+            }
+        }
+    }
+
+    private static boolean isEncodableForLegacyClient(RecipeData recipe) {
+        if (recipe instanceof CraftingRecipeData crafting) {
+            return allResolved(crafting.getIngredients());
+        }
+        if (recipe instanceof SmithingTransformRecipeData smithing) {
+            return allResolved(List.of(smithing.getTemplate(), smithing.getBase(), smithing.getAddition()));
+        }
+        if (recipe instanceof SmithingTrimRecipeData trim) {
+            return allResolved(List.of(trim.getTemplate(), trim.getBase(), trim.getAddition()));
+        }
+        return true;
+    }
+
+    private static boolean allResolved(List<ItemDescriptorWithCount> ingredients) {
+        for (ItemDescriptorWithCount ingredient : ingredients) {
+            if (ingredient != null && ingredient.getDescriptor() instanceof DefaultDescriptor descriptor
+                    && descriptor.getItemId() == null) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**

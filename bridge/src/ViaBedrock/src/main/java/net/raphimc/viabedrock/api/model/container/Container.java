@@ -91,6 +91,12 @@ public abstract class Container {
         if (containerName == null) {
             return null;
         }
+        if (containerName == ContainerEnumName.CreatedOutputContainer) {
+            // Whatever is shown here is this side's own prediction of a craft that has not happened.
+            // The stack the server will make has no id yet, so it is named by the request that makes
+            // it -- see ItemStackRequestSlot.PRODUCED_BY_THIS_REQUEST.
+            return new ItemStackRequestSlot(containerName, this.requestSlotIndex(slot), ItemStackRequestSlot.PRODUCED_BY_THIS_REQUEST);
+        }
         final Integer netId = this.getItem(slot).netId();
         return new ItemStackRequestSlot(containerName, this.requestSlotIndex(slot), netId == null ? 0 : netId);
     }
@@ -141,7 +147,7 @@ public abstract class Container {
     }
 
     public Item[] getJavaItems() {
-        return this.user.get(ItemRewriter.class).javaItems(this.items);
+        return this.user.get(ItemRewriter.class).javaItems(this.getItems());
     }
 
     public BedrockItem getItem(final int slot) {
@@ -150,6 +156,18 @@ public abstract class Container {
 
     public BedrockItem[] getItems() {
         return Arrays.copyOf(this.items, this.items.length);
+    }
+
+    /**
+     * Whether this window's slot holds the output of a crafting grid rather than an item that can
+     * simply be picked up.
+     *
+     * <p>Taking a crafting result is a <em>craft</em>: an item stack request naming the recipe, not
+     * a move of what happens to be sitting there. A window that has one has to say so, because the
+     * click looks identical from the outside — see {@link ContainerClickTranslator}.</p>
+     */
+    public boolean isCraftingResult(final int javaSlot) {
+        return false;
     }
 
     public boolean setItem(final int slot, final BedrockItem item) {
@@ -170,6 +188,16 @@ public abstract class Container {
     /** Whether this container has changed since the Java client was last told its whole contents. */
     public boolean isDirty() {
         return this.dirty;
+    }
+
+    /**
+     * Marks this container as needing to be re-sent, for a change {@link #setItem} did not make.
+     *
+     * <p>A window whose items live in another container — a crafting table's do — never sees the
+     * write that changed what it shows, so nothing would flag it.</p>
+     */
+    public void markDirty() {
+        this.dirty = true;
     }
 
     public void markClean() {

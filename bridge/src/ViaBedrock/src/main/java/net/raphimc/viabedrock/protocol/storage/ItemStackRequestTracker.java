@@ -133,7 +133,9 @@ public class ItemStackRequestTracker extends StoredObject {
         itemStackRequest.write(BedrockTypes.VAR_INT, requestId); // request id
         itemStackRequest.write(BedrockTypes.UNSIGNED_VAR_INT, actions.size()); // action count
         for (ItemStackRequestAction action : actions) {
-            action.write(itemStackRequest);
+            // The id goes into the actions as well as the header: a slot naming a stack this request
+            // has yet to create refers to it by the request's own id.
+            action.write(itemStackRequest, requestId);
         }
         itemStackRequest.write(BedrockTypes.UNSIGNED_VAR_INT, 0); // filter string count
         itemStackRequest.write(BedrockTypes.INT_LE, -1); // filter cause: none

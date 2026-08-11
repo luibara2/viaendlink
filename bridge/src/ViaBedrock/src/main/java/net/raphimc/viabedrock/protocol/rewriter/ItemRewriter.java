@@ -76,6 +76,8 @@ public class ItemRewriter extends StoredObject {
     private final Type<BedrockItem> newItemType;
     private final Type<BedrockItem> optionalNewItemType;
     private final Type<BedrockItem[]> newItemArrayType;
+    private final Type<BedrockItem> itemInstanceType;
+    private final Type<BedrockItem[]> itemInstanceArrayType;
 
     static {
         // TODO: Add missing item nbt rewriters
@@ -120,6 +122,11 @@ public class ItemRewriter extends StoredObject {
         this.newItemType = new NetworkItemStackDescriptorType(this.items.getOrDefault("minecraft:shield", 0), this.blockItemValidBlockStates, false);
         this.optionalNewItemType = new OptionalType<>(this.newItemType);
         this.newItemArrayType = new ArrayType<>(this.newItemType, BedrockTypes.UNSIGNED_VAR_INT);
+        // An ItemInstance: the same fields as an Item with the stack network id field left off
+        // entirely. Crafting recipe results and an item stack request's predicted craft result are
+        // written this way, and nothing else here is.
+        this.itemInstanceType = new BedrockItemType(this.items.getOrDefault("minecraft:shield", 0), this.blockItemValidBlockStates, false, false);
+        this.itemInstanceArrayType = new ArrayType<>(this.itemInstanceType, BedrockTypes.UNSIGNED_VAR_INT);
     }
 
     public Item javaItem(final BedrockItem bedrockItem) {
@@ -322,6 +329,14 @@ public class ItemRewriter extends StoredObject {
 
     public Type<BedrockItem[]> newItemArrayType() {
         return this.newItemArrayType;
+    }
+
+    public Type<BedrockItem> itemInstanceType() {
+        return this.itemInstanceType;
+    }
+
+    public Type<BedrockItem[]> itemInstanceArrayType() {
+        return this.itemInstanceArrayType;
     }
 
     public interface NbtRewriter {

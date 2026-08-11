@@ -61,8 +61,10 @@ import net.raphimc.viabedrock.api.chunk.BedrockBlockEntity;
 import net.raphimc.viabedrock.api.model.container.ChestContainer;
 import net.raphimc.viabedrock.api.model.container.ContainerClickTranslator;
 import net.raphimc.viabedrock.api.model.container.Container;
+import net.raphimc.viabedrock.api.model.container.CraftingContainer;
 import net.raphimc.viabedrock.api.model.container.player.InventoryContainer;
 import net.raphimc.viabedrock.api.model.entity.Entity;
+import net.raphimc.viabedrock.api.util.CraftingDataReader;
 import net.raphimc.viabedrock.api.util.PacketFactory;
 import net.raphimc.viabedrock.api.util.TextUtil;
 import net.raphimc.viabedrock.protocol.BedrockProtocol;
@@ -170,15 +172,29 @@ public class InventoryPackets {
                         ContainerEnumName.LevelEntityContainer, CustomBlockTags.DROPPER);
                 case CRAFTER -> container = new ChestContainer(wrapper.user(), containerId, type, title, position, 9,
                         ContainerEnumName.CrafterLevelEntityContainer, CustomBlockTags.CRAFTER);
+                case WORKBENCH -> {
+                    // The one screen here whose result slot is this side's own work: Bedrock sends
+                    // no crafting preview, so without the recipe list the window would open showing
+                    // an empty result whatever the player put in the grid.
+                    if (wrapper.user().get(RecipeStorage.class).isEmpty()) {
+                        ViaBedrock.getPlatform().getLogger().log(Level.WARNING, "Refusing to open a crafting table: the server sent no "
+                                + "crafting recipes, so the result slot could only ever be empty. Check that CRAFTING_DATA reached this "
+                                + "connection with its recipe list intact.");
+                        wrapper.cancel();
+                        PacketFactory.sendBedrockContainerClose(wrapper.user(), containerId, ContainerType.NONE);
+                        return;
+                    }
+                    container = new CraftingContainer(wrapper.user(), containerId, title, position);
+                }
                 case NONE, CAULDRON, JUKEBOX, ARMOR, HAND, HUD, DECORATED_POT -> { // Bedrock client can't open these containers
                     wrapper.cancel();
                     return;
                 }
                 default -> {
-                    // Everything left needs more than moving items around: a crafting table, anvil,
-                    // enchanting table or brewing stand has slots whose meaning the server derives
-                    // from a recipe, and taking their result is a craft request carrying a recipe
-                    // network id. Nothing here tracks recipes, so opening the screen would show the
+                    // Everything left needs more than moving items around: an anvil, enchanting
+                    // table or brewing stand has slots whose meaning the server derives from a
+                    // recipe of its own, and taking their result carries a cost, a level or a
+                    // grindstone id this side does not track. Opening the screen would show the
                     // player a result they could never take. Refusing is the honest answer.
                     wrapper.cancel();
                     ViaBedrock.getPlatform().getLogger().log(Level.WARNING, "Tried to open unimplemented container: " + type);
@@ -297,6 +313,33 @@ public class InventoryPackets {
 
                 requestTracker.handleResponse(requestId, result == null ? "unknown result " + rawResult : result.name(), success, updates);
             }
+        });
+        // Bedrock's recipe list. A Bedrock client uses it to draw the crafting preview its server
+        // never sends and to name the recipe in a craft request, so a bridge that ignores it can
+        // show a crafting table but can never let the player take anything out of one. Java has its
+        // own recipe packet, but nothing here needs to send it: the client only ever displays the
+        // result slot this side fills in, and an empty recipe book is a cosmetic loss.
+        protocol.registerClientbound(ClientboundBedrockPackets.CRAFTING_DATA, null, wrapper -> {
+            wrapper.cancel();
+            final ItemRewriter itemRewriter = wrapper.user().get(ItemRewriter.class);
+            if (itemRewriter == null) {
+                // ITEM_REGISTRY normally precedes this, and every recipe names its items by the
+                // runtime ids that packet defines. Reading it now would resolve nothing.
+                ViaBedrock.getPlatform().getLogger().log(Level.WARNING, "The server sent its crafting recipes before the item "
+                        + "registry. They have been ignored, so Java players will not be able to craft.");
+                return;
+            }
+            try {
+                final CraftingDataReader.Result result = CraftingDataReader.read(wrapper, itemRewriter);
+                wrapper.user().get(RecipeStorage.class).addRecipes(result.recipes(), result.cleanRecipes());
+            } catch (Throwable e) {
+                // One unreadable entry costs every entry after it, because the list has no per-entry
+                // length to resynchronise on. Say so: the symptom otherwise is a crafting table that
+                // opens and refuses every recipe past a certain point, with nothing to point at.
+                ViaBedrock.getPlatform().getLogger().log(Level.WARNING, "Could not read the server's crafting recipes. "
+                        + "Java players will not be able to craft.", e);
+            }
+            wrapper.user().get(InventoryTracker.class).refreshCraftingResult();
         });
         protocol.registerClientbound(ClientboundBedrockPackets.MODAL_FORM_REQUEST, ClientboundPackets26_1.SHOW_DIALOG, wrapper -> {
             final InventoryTracker inventoryTracker = wrapper.user().get(InventoryTracker.class);
@@ -554,22 +597,20 @@ public class InventoryPackets {
                 wrapper.cancel();
                 return;
             }
-            final BooleanSupplier apply = () -> {
+            // Whether this slot is giving items up. One click can change two slots and they arrive
+            // separately, so this is decided now, while the tracked contents still describe the
+            // state before any of them have been applied.
+            final Container.ContainerSlot target = slot < 0 ? null : inventoryTracker.getInventoryContainer().resolveJavaSlot(slot);
+            final int tracked = target == null ? 0 : target.container().getItem(target.slot()).amount();
+            final boolean loss = target != null && (item == null ? 0 : Math.max(item.amount(), 0)) < tracked;
+
+            inventoryTracker.queueCreativeSlotUpdate(loss, () -> {
                 if (ContainerClickTranslator.translateCreativeSlot(wrapper.user(), slot, item)) {
                     return true;
                 }
                 warnUnexpressibleCreativeSlot(slot, item);
                 return false;
-            };
-            // The server refuses item stack requests against a screen it does not believe is open,
-            // and a creative client announces its inventory screen no more than a survival one does.
-            // So this goes through the same gate: say the screen is open, and hold this until it is.
-            if (!inventoryTracker.isContainerOpen() && inventoryTracker.deferUntilInventoryOpens(apply)) {
-                return;
-            }
-            if (!apply.getAsBoolean()) {
-                PacketFactory.sendJavaContainerSetContent(wrapper.user(), inventoryTracker.getInventoryContainer());
-            }
+            });
         });
         protocol.registerServerbound(ServerboundPackets26_1.CUSTOM_CLICK_ACTION, ServerboundBedrockPackets.MODAL_FORM_RESPONSE, wrapper -> {
             final String id = wrapper.read(Types.STRING); // id

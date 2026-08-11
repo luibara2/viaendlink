@@ -49,14 +49,36 @@ import net.raphimc.viabedrock.protocol.types.BedrockTypes;
  */
 public record ItemStackRequestSlot(FullContainerName containerName, int slot, int stackNetworkId) {
 
+    /**
+     * Stands in for the id of a stack that does not exist yet.
+     *
+     * <p>A craft's result is the case: the request that takes it out of the created-output slot is
+     * the same request that makes it, so at the moment it is written there is no stack and no id to
+     * quote. Bedrock's answer is that <b>a stack is named by the request that produced it</b> — the
+     * source's stack network id is the request's own id, which is negative, and that is what tells
+     * the server it means "the one you are about to create" rather than a stale handle. Sending 0
+     * instead is refused with {@code FailedToValidateSrcSlot}, which reads like the slot is wrong
+     * rather than the id.</p>
+     *
+     * <p>Confirmed against a vanilla Bedrock client crafting through the proxy: request -35 took its
+     * result from {@code CREATED_OUTPUT[50] netId=-35}, and -45 and -53 likewise. The same
+     * convention shows up between requests — a client acting again before the response arrives
+     * quotes the earlier request's id for the stack that request created.</p>
+     *
+     * <p>Substituted at write time, in {@link #write}, because the id is only chosen when the
+     * request is sent.</p>
+     */
+    public static final int PRODUCED_BY_THIS_REQUEST = Integer.MIN_VALUE;
+
     public ItemStackRequestSlot(final ContainerEnumName containerName, final int slot, final int stackNetworkId) {
         this(new FullContainerName(containerName, null), slot, stackNetworkId);
     }
 
-    public void write(final PacketWrapper wrapper) {
+    public void write(final PacketWrapper wrapper, final int requestId) {
         wrapper.write(BedrockTypes.FULL_CONTAINER_NAME, this.containerName); // container name
         wrapper.write(Types.BYTE, (byte) this.slot); // slot
-        wrapper.write(BedrockTypes.VAR_INT, this.stackNetworkId); // stack network id
+        final int stackNetworkId = this.stackNetworkId == PRODUCED_BY_THIS_REQUEST ? requestId : this.stackNetworkId;
+        wrapper.write(BedrockTypes.VAR_INT, stackNetworkId); // stack network id
     }
 
 }

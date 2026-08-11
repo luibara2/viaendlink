@@ -19,6 +19,7 @@ package net.raphimc.viabedrock.api.model.container;
 
 import com.viaversion.viaversion.api.connection.UserConnection;
 import com.viaversion.viaversion.api.minecraft.item.Item;
+import net.raphimc.viabedrock.api.model.container.player.HudContainer;
 import net.raphimc.viabedrock.api.model.container.player.InventoryContainer;
 import net.raphimc.viabedrock.protocol.data.enums.java.generated.ContainerInput;
 import net.raphimc.viabedrock.protocol.model.BedrockItem;
@@ -26,6 +27,7 @@ import net.raphimc.viabedrock.protocol.model.ItemStackRequestAction;
 import net.raphimc.viabedrock.protocol.model.ItemStackRequestSlot;
 import net.raphimc.viabedrock.protocol.storage.InventoryTracker;
 import net.raphimc.viabedrock.protocol.storage.ItemStackRequestTracker;
+import net.raphimc.viabedrock.protocol.storage.RecipeStorage;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -73,6 +75,13 @@ public final class ContainerClickTranslator {
         }
         final BedrockItem cursorItem = hudContainer.getItem(HudSlots.CURSOR);
 
+        // Taking a crafting result is not a move of whatever is sitting in that slot: the slot's
+        // contents are this side's own prediction, and the server will only produce them in answer
+        // to a request naming the recipe. Everything below moves items; this does not.
+        if (window.isCraftingResult(javaSlot)) {
+            return craft(user, window, hudContainer, action, cursorItem);
+        }
+
         return switch (action) {
             case PICKUP -> pickup(user, window, hudContainer, javaSlot, button, cursorItem);
             case THROW -> throwOut(user, window, hudContainer, javaSlot, button, cursorItem);
@@ -83,6 +92,197 @@ public final class ContainerClickTranslator {
             // double-click gather. None has a single-request equivalent, so they resync instead.
             case CLONE, QUICK_CRAFT, PICKUP_ALL -> false;
         };
+    }
+
+    /**
+     * Turns a click on the crafting result into the request that actually makes the item.
+     *
+     * <p>Bedrock's craft is a fixed sequence and the server checks all of it: name the recipe, state
+     * what it is expected to produce, take the ingredients out of the grid, then move the result
+     * somewhere. Sending only the last step — which is what a naive reading of the click would do —
+     * is refused, because as far as the server is concerned nothing has been crafted and the result
+     * slot is empty.</p>
+     *
+     * <p>A plain click makes one; shift-click makes as many as the grid allows, which is what Java
+     * does, and needs the count decided up front because the whole thing travels as one request.</p>
+     */
+    private static boolean craft(final UserConnection user, final Container window, final Container hudContainer,
+                                 final ContainerInput action, final BedrockItem cursorItem) {
+        if (action != ContainerInput.PICKUP && action != ContainerInput.QUICK_MOVE) {
+            // THROW would craft onto the floor and CLONE/QUICK_CRAFT/PICKUP_ALL have no craft
+            // meaning at all. Refusing puts the window back rather than inventing a craft.
+            return false;
+        }
+
+        final InventoryTracker inventoryTracker = user.get(InventoryTracker.class);
+        final RecipeStorage recipes = user.get(RecipeStorage.class);
+        final boolean table = window instanceof CraftingContainer;
+        final int gridWidth = table ? 3 : 2;
+        final int gridFirst = table ? CraftingContainer.GRID_FIRST : HudContainer.SMALL_GRID_FIRST;
+
+        final BedrockItem[] grid = new BedrockItem[gridWidth * gridWidth];
+        for (int i = 0; i < grid.length; i++) {
+            grid[i] = hudContainer.getItem(gridFirst + i);
+        }
+
+        final RecipeStorage.Match match = recipes == null ? null : recipes.match(grid, gridWidth);
+        if (match == null) {
+            return true; // Clicking an empty result slot, which is a no-op rather than a failure
+        }
+        final BedrockItem result = match.recipe().result();
+        final int available = match.maxCrafts(grid);
+        if (available <= 0) {
+            return true;
+        }
+
+        // Named on the player UI container, not on this window. Both windows put their result in the
+        // same place, and the player's own window would otherwise name slot 0 as a hotbar slot --
+        // which is what it is for every other purpose.
+        final ItemStackRequestSlot resultSlot = hudContainer.requestSlot(CraftingContainer.RESULT);
+        if (resultSlot == null) {
+            return false;
+        }
+
+        // Where the finished items end up, decided first because the number of crafts depends on it
+        final List<ItemStackRequestAction> movements = new ArrayList<>();
+        final List<Runnable> predictions = new ArrayList<>();
+        final List<Container> affected = new ArrayList<>();
+        affected.add(hudContainer);
+
+        final int crafts;
+        if (action == ContainerInput.PICKUP) {
+            crafts = 1;
+            if (!cursorItem.isEmpty()) {
+                // Java only lets a craft onto an occupied cursor when it stacks and there is room
+                if (cursorItem.isDifferent(result) || cursorItem.amount() + result.amount() > ASSUMED_MAX_STACK_SIZE) {
+                    return true;
+                }
+            }
+            final ItemStackRequestSlot cursorSlot = hudContainer.requestSlot(HudSlots.CURSOR);
+            if (cursorSlot == null) {
+                return false;
+            }
+            movements.add(new ItemStackRequestAction.Take(result.amount(), resultSlot, cursorSlot));
+            predictions.add(() -> place(hudContainer, HudSlots.CURSOR, result, result.amount()));
+        } else {
+            crafts = available;
+            if (!distributeIntoInventory(user, resultSlot, result, crafts * result.amount(), movements, predictions, affected)) {
+                return false;
+            }
+        }
+
+        // The order the server applies them in, and it is not negotiable: name the recipe, state
+        // what it should produce, hand over the ingredients, and only then move the result out of a
+        // slot that until this request had nothing in it.
+        final List<ItemStackRequestAction> actions = new ArrayList<>();
+        actions.add(new ItemStackRequestAction.CraftRecipe(match.recipe().netId(), crafts));
+        actions.add(new ItemStackRequestAction.CraftResults(new BedrockItem[]{result}, crafts));
+        for (int slot = 0; slot < grid.length; slot++) {
+            final int consumedPerCraft = match.consumed()[slot];
+            if (consumedPerCraft <= 0) {
+                continue;
+            }
+            final int hudSlot = gridFirst + slot;
+            final ItemStackRequestSlot ingredientSlot = hudContainer.requestSlot(hudSlot);
+            if (ingredientSlot == null) {
+                return false;
+            }
+            final int consumed = consumedPerCraft * crafts;
+            actions.add(new ItemStackRequestAction.Consume(consumed, ingredientSlot));
+            predictions.add(() -> take(hudContainer, hudSlot, consumed));
+        }
+        actions.addAll(movements);
+
+        user.get(ItemStackRequestTracker.class).send(actions, () -> {
+            for (Runnable prediction : predictions) {
+                prediction.run();
+            }
+            // The grid emptied, so the result slot has to be recomputed rather than left showing
+            // what was just taken out of it.
+            inventoryTracker.refreshCraftingResult();
+        }, affected.toArray(new Container[0]));
+        return true;
+    }
+
+    /**
+     * Spreads a shift-click's worth of crafted items across the player's inventory.
+     *
+     * <p>Java's shift-click has no Bedrock counterpart here either — the same problem
+     * {@link #quickMove} solves, except the source is a slot that does not exist yet. Each
+     * destination gets its own {@code Place} out of the created-output slot, and if there is
+     * nowhere for all of them to go the craft is not attempted: a partial craft-all would leave the
+     * player having spent ingredients on items that were dropped.</p>
+     */
+    private static boolean distributeIntoInventory(final UserConnection user, final ItemStackRequestSlot resultSlot,
+                                                   final BedrockItem result, final int total,
+                                                   final List<ItemStackRequestAction> actions,
+                                                   final List<Runnable> predictions, final List<Container> affected) {
+        final InventoryContainer inventory = user.get(InventoryTracker.class).getInventoryContainer();
+        if (!affected.contains(inventory)) {
+            affected.add(inventory);
+        }
+
+        // Main inventory before the hotbar, the same order a shift-click out of any other container
+        // uses here. Bedrock numbers the hotbar 0-8 and the inventory 9-35, so this is not the
+        // natural slot order.
+        final int[] order = new int[inventory.size()];
+        for (int i = 0; i < order.length; i++) {
+            order[i] = i < 27 ? i + 9 : i - 27;
+        }
+
+        final int[] planned = new int[inventory.size()];
+        int remaining = total;
+        for (int pass = 0; pass < 2 && remaining > 0; pass++) {
+            final boolean mergeOnly = pass == 0;
+            for (int index = 0; index < order.length && remaining > 0; index++) {
+                final int slot = order[index];
+                final BedrockItem existing = inventory.getItem(slot);
+                final int room;
+                if (mergeOnly) {
+                    if (existing.isEmpty() || existing.isDifferent(result)) {
+                        continue;
+                    }
+                    room = ASSUMED_MAX_STACK_SIZE - existing.amount() - planned[slot];
+                } else {
+                    if (!existing.isEmpty() || planned[slot] > 0) {
+                        continue;
+                    }
+                    room = ASSUMED_MAX_STACK_SIZE;
+                }
+                if (room <= 0) {
+                    continue;
+                }
+                final int count = Math.min(room, remaining);
+                planned[slot] += count;
+                remaining -= count;
+            }
+        }
+        if (remaining > 0) {
+            return false; // Not enough room for the whole craft, so none of it is attempted
+        }
+
+        for (int slot = 0; slot < planned.length; slot++) {
+            if (planned[slot] <= 0) {
+                continue;
+            }
+            final ItemStackRequestSlot destination = inventory.requestSlot(slot);
+            if (destination == null) {
+                return false;
+            }
+            final int count = planned[slot];
+            final int target = slot;
+            actions.add(new ItemStackRequestAction.Place(count, resultSlot, destination));
+            predictions.add(() -> place(inventory, target, result, count));
+        }
+        return true;
+    }
+
+    /** Adds items of a known identity to a slot, whether or not something is already there. */
+    private static void place(final Container container, final int slot, final BedrockItem item, final int count) {
+        final BedrockItem existing = container.getItem(slot);
+        final BedrockItem updated = item.copy();
+        updated.setAmount(existing.isEmpty() ? count : existing.amount() + count);
+        container.setItem(slot, updated);
     }
 
     /**
@@ -124,6 +324,9 @@ public final class ContainerClickTranslator {
             return dropFrom(user, hudContainer, HudSlots.CURSOR, Math.min(newAmount, cursorItem.amount()));
         }
 
+        if (inventoryTracker.getInventoryContainer().isCraftingResult(javaSlot)) {
+            return false; // The result slot is this side's own preview; nothing may be written into it
+        }
         final Container.ContainerSlot target = inventoryTracker.getInventoryContainer().resolveJavaSlot(javaSlot);
         if (target == null) {
             return false;
@@ -415,6 +618,9 @@ public final class ContainerClickTranslator {
             }
         } else { // Out of the player, into the container
             for (int slot = 0; slot < window.size(); slot++) {
+                if (window.isCraftingResult(slot)) {
+                    continue; // Nothing may be put into a result slot; it is not storage
+                }
                 destinations.add(new Container.ContainerSlot(window, slot));
             }
         }

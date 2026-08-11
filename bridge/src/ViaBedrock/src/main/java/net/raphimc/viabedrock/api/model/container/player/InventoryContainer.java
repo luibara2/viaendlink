@@ -25,6 +25,7 @@ import com.viaversion.viaversion.api.protocol.packet.PacketWrapper;
 import com.viaversion.viaversion.api.type.Types;
 import com.viaversion.viaversion.protocols.v1_21_11to26_1.packet.ClientboundPackets26_1;
 import net.raphimc.viabedrock.api.model.container.Container;
+import net.raphimc.viabedrock.api.model.container.CraftingContainer;
 import net.raphimc.viabedrock.protocol.BedrockProtocol;
 import net.raphimc.viabedrock.protocol.ServerboundBedrockPackets;
 import net.raphimc.viabedrock.protocol.data.enums.bedrock.generated.ContainerEnumName;
@@ -64,8 +65,12 @@ public class InventoryContainer extends Container {
         System.arraycopy(inventoryItems, 0, combinedItems, 36, 9);
         System.arraycopy(offhandItems, 0, combinedItems, 45, offhandItems.length);
         for (int i = 0; i < 4; i++) {
-            combinedItems[1 + i] = hudContainer.getJavaItem(28 + i);
+            combinedItems[1 + i] = hudContainer.getJavaItem(HudContainer.SMALL_GRID_FIRST + i);
         }
+        // Slot 0 is what the 2x2 square currently makes. A Java server would compute it and push it
+        // here; Bedrock sends no preview at all, so InventoryTracker.refreshCraftingResult works it
+        // out from the recipe list and leaves the answer in the UI container's result slot.
+        combinedItems[0] = hudContainer.getJavaItem(CraftingContainer.RESULT);
         return combinedItems;
     }
 
@@ -105,6 +110,9 @@ public class InventoryContainer extends Container {
     @Override
     public ContainerSlot resolveJavaSlot(final int javaSlot) {
         final InventoryTracker inventoryTracker = this.user.get(InventoryTracker.class);
+        if (javaSlot == 0) { // What the 2x2 square makes; taking it is a craft, not a move
+            return new ContainerSlot(inventoryTracker.getHudContainer(), CraftingContainer.RESULT);
+        }
         if (javaSlot >= 1 && javaSlot <= 4) { // 2x2 crafting grid, which Bedrock keeps in the UI container
             return new ContainerSlot(inventoryTracker.getHudContainer(), javaSlot + 27);
         }
@@ -120,9 +128,13 @@ public class InventoryContainer extends Container {
         if (javaSlot == 45) {
             return new ContainerSlot(inventoryTracker.getOffhandContainer(), 0);
         }
-        // Slot 0 is the crafting result. Taking from it is a craft, not a move: it needs the recipe
-        // network id the client would have matched, which we do not track, so it resyncs instead.
         return null;
+    }
+
+    /** Slot 0 of the player's own window is the 2x2 square's output. */
+    @Override
+    public boolean isCraftingResult(final int javaSlot) {
+        return javaSlot == 0;
     }
 
     @Override
