@@ -399,24 +399,31 @@ public class ChunkTracker extends StoredObject {
             entityTracker.removeItemFrame(blockPosition);
         }
 
-        if (prevBlockState != blockState) {
-            if (BlockEntityRewriter.isBlockEntity(tag)) {
-                final BedrockBlockEntity bedrockBlockEntity = this.getBlockEntity(blockPosition);
-                BlockEntity javaBlockEntity = null;
-                if (bedrockBlockEntity != null) {
-                    javaBlockEntity = BlockEntityRewriter.toJava(this.user(), blockState, bedrockBlockEntity);
-                    if (javaBlockEntity instanceof BlockEntityWithBlockState blockEntityWithBlockState) {
-                        remappedBlockState = blockEntityWithBlockState.blockState();
-                    }
-                } else if (BedrockProtocol.MAPPINGS.getJavaBlockEntities().containsKey(tag)) {
-                    final int javaType = BedrockProtocol.MAPPINGS.getJavaBlockEntities().get(tag);
-                    javaBlockEntity = new BlockEntityImpl(BlockEntity.pack(sectionX, sectionZ), (short) blockPosition.y(), javaType, new CompoundTag());
+        // A block state that a block entity has a say in has to be re-derived on every update, not
+        // only on the ones that changed something. Servers re-send a block the state it already has
+        // -- BDS does exactly that for both halves of a chest the moment its container opens -- and
+        // deriving only on change meant answering those with the plain mapping, which for a chest
+        // says type=single. The player saw their double chest split into two under them while the
+        // 54-slot screen they had just opened stayed open on top of it.
+        BlockEntity javaBlockEntity = null;
+        if (BlockEntityRewriter.isBlockEntity(tag)) {
+            final BedrockBlockEntity bedrockBlockEntity = this.getBlockEntity(blockPosition);
+            if (bedrockBlockEntity != null) {
+                javaBlockEntity = BlockEntityRewriter.toJava(this.user(), blockState, bedrockBlockEntity);
+                if (javaBlockEntity instanceof BlockEntityWithBlockState blockEntityWithBlockState) {
+                    remappedBlockState = blockEntityWithBlockState.blockState();
                 }
+            } else if (prevBlockState != blockState && BedrockProtocol.MAPPINGS.getJavaBlockEntities().containsKey(tag)) {
+                final int javaType = BedrockProtocol.MAPPINGS.getJavaBlockEntities().get(tag);
+                javaBlockEntity = new BlockEntityImpl(BlockEntity.pack(sectionX, sectionZ), (short) blockPosition.y(), javaType, new CompoundTag());
+            }
+        }
 
-                if (javaBlockEntity != null && javaBlockEntity.tag() != null) {
-                    return new IntObjectImmutablePair<>(remappedBlockState, javaBlockEntity);
-                }
-            } else if (CustomBlockTags.ITEM_FRAME.equals(tag)) {
+        if (prevBlockState != blockState) {
+            if (javaBlockEntity != null && javaBlockEntity.tag() != null) {
+                return new IntObjectImmutablePair<>(remappedBlockState, javaBlockEntity);
+            }
+            if (CustomBlockTags.ITEM_FRAME.equals(tag)) {
                 entityTracker.spawnItemFrame(blockPosition, blockStateRewriter.blockState(blockState));
             }
         }
